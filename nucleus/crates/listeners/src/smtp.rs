@@ -18,7 +18,7 @@ struct Envelope {
 }
 
 pub async fn handle(stream: BoxStream, mut session: Session) -> anyhow::Result<()> {
-    let hostname = session.ctx.defaults.mail.hostname.clone();
+    let hostname = session.ctx.defaults.load().mail.hostname.clone();
     let mut lines = Lines::new(stream);
     lines.send(&session, format!("220 {hostname} ESMTP FakeNet\r\n").as_bytes()).await?;
 

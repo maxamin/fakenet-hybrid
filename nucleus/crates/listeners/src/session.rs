@@ -29,7 +29,8 @@ pub type OriginalLookup = Arc<dyn Fn(Transport, SocketAddr, SocketAddr) -> Optio
 pub struct Context {
     pub link: Link,
     pub capture: Arc<Capture>,
-    pub defaults: Defaults,
+    /// The built-in default responses; hot-swappable (SIGHUP reloads [defaults])
+    pub defaults: arc_swap::ArcSwap<Defaults>,
     pub tls: Arc<TlsAuthority>,
     /// Idle timeout for client reads
     pub timeout: Duration,
@@ -185,7 +186,7 @@ impl Session {
 
     /// The configured random delay (defaults.latency_ms) before answering
     async fn jitter(&self) {
-        let [min, max] = self.ctx.defaults.latency_ms;
+        let [min, max] = self.ctx.defaults.load().latency_ms;
         if max == 0 {
             return;
         }

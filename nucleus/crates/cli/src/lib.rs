@@ -512,8 +512,8 @@ mod tests {
         assert_eq!(config.link(None).deadline, Duration::from_millis(200));
         assert!(!config.diverter.enabled); // Never on by default
         let plan = config.plan();
-        assert_eq!(plan.tcp_ports, [53, 80, 443, 25, 465, 110, 21, 6667, 143, 23, 6379, 1080, 22]);
-        assert_eq!(plan.udp_ports, [53, 443, 69, 123, 514]); // 443: HTTP/3
+        assert_eq!(plan.tcp_ports, [53, 80, 443, 25, 465, 110, 21, 6667, 143, 23, 6379, 1080, 22, 445, 389, 3389, 5900, 1883, 853]);
+        assert_eq!(plan.udp_ports, [53, 443, 69, 123, 514, 5683]); // 443: HTTP/3; 5683: CoAP
         assert_eq!((plan.tcp_default, plan.udp_default), (Some(1337), Some(1338)));
         assert_eq!(plan.passive_ports, Some((60000, 60010)));
         // Relative paths resolve against the config's directory: the bundled default files

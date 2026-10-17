@@ -66,7 +66,7 @@ impl KexInit {
 }
 
 pub async fn handle(stream: BoxStream, mut session: Session) -> anyhow::Result<()> {
-    let banner = session.ctx.defaults.ssh.banner.clone();
+    let banner = session.ctx.defaults.load().ssh.banner.clone();
     let mut lines = Lines::new(stream);
     lines.send(&session, format!("{banner}\r\n").as_bytes()).await?;
     // Clients may send other lines before their identification string (RFC 4253 4.2)

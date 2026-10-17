@@ -49,7 +49,7 @@ impl Nucleus {
         let ctx = Arc::new(Context {
             link: Link::start(link),
             capture: Capture::open(&dir).unwrap(),
-            defaults,
+            defaults: arc_swap::ArcSwap::from_pointee(defaults),
             tls: ca.clone(),
             timeout: Duration::from_secs(5),
             first_data_timeout: Duration::from_millis(300),

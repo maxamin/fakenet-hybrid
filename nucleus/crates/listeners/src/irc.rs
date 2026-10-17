@@ -28,7 +28,7 @@ pub fn parse_message(line: &str) -> (String, Vec<String>) {
 }
 
 pub async fn handle(stream: BoxStream, mut session: Session) -> anyhow::Result<()> {
-    let server = session.ctx.defaults.irc.server_name.clone();
+    let server = session.ctx.defaults.load().irc.server_name.clone();
     let mut lines = Lines::new(stream);
     let mut nick = "*".to_string();
     let mut user = "user".to_string();

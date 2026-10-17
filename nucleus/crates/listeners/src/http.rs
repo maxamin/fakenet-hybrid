@@ -39,7 +39,7 @@ pub async fn handle(stream: BoxStream, session: Session) -> anyhow::Result<()> {
 /// CONNECT host:port (a proxy-aware client): an event; a daemon response refuses the
 /// tunnel, else it's accepted and its contents served as a new, sniffed session
 async fn connect(mut request: Request<Incoming>, session: &mut Session) -> Response<Full<Bytes>> {
-    let defaults = session.ctx.defaults.http.clone();
+    let defaults = session.ctx.defaults.load().http.clone();
     let target = request.uri().authority().map(|a| a.to_string()).unwrap_or_default();
     let line = format!("CONNECT {target} HTTP/1.1\r\n\r\n");
     session.client_data(line.as_bytes());
@@ -72,7 +72,7 @@ async fn respond(request: Request<Incoming>, session: &Mutex<Session>) -> Respon
     if crate::websocket::is_upgrade(&request) {
         return crate::websocket::accept(request, &mut session).await;
     }
-    let defaults = session.ctx.defaults.http.clone();
+    let defaults = session.ctx.defaults.load().http.clone();
     let (parts, body) = request.into_parts();
     let mut held = session.ctx.limits.hold();
     let body = match read_body(body, defaults.max_body_bytes, &mut held).await {
@@ -115,7 +115,7 @@ fn doh_query(parts: &hyper::http::request::Parts, body: &Bytes) -> Option<Vec<u8
 
 /// Answers a DoH query with the DNS handler (logged and decided as DNS)
 async fn doh(session: &mut Session, parts: &hyper::http::request::Parts, query: &[u8]) -> Response<Full<Bytes>> {
-    let server = session.ctx.defaults.http.server_header.clone();
+    let server = session.ctx.defaults.load().http.server_header.clone();
     let host = parts.headers.get("host").and_then(|h| h.to_str().ok()).unwrap_or_default().to_string();
     session.log("doh", json!({ "method": parts.method.as_str(), "host": host }));
     session.client_data(query);
@@ -142,7 +142,7 @@ async fn doh(session: &mut Session, parts: &hyper::http::request::Parts, query: 
 /// One HTTP request (any version: HTTP/1.1, HTTP/2, HTTP/3), read in full: the event, the
 /// daemon's decision or the default, and the capture. Returns the response to send.
 pub(crate) async fn answer(session: &mut Session, parts: hyper::http::request::Parts, body: Bytes) -> Response<Full<Bytes>> {
-    let defaults = session.ctx.defaults.http.clone();
+    let defaults = session.ctx.defaults.load().http.clone();
     if let Some(query) = doh_query(&parts, &body) {
         return doh(session, &parts, &query).await;
     }
@@ -210,7 +210,8 @@ pub(crate) async fn answer(session: &mut Session, parts: hyper::http::request::P
 /// The listener's matching FakeNet-NG Custom Response, if any
 async fn custom_response(session: &Session, parts: &hyper::http::request::Parts, host: &str, body: &[u8]) -> Option<Response<Full<Bytes>>> {
     let custom = session.custom.as_deref()?.match_http(host, &parts.uri.to_string())?;
-    let server = &session.ctx.defaults.http.server_header;
+    let guard = session.ctx.defaults.load();
+    let server = &guard.http.server_header;
     session.log("custom_response", json!({ "section": custom.name }));
     Some(match &custom.response {
         HttpResponse::Raw(raw) => from_raw(&replace_date(raw), server, false),

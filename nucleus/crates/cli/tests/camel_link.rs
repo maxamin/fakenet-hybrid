@@ -165,7 +165,7 @@ async fn nucleus_and_camel_daemon() {
     let ctx = Arc::new(Context {
         link: link.clone(),
         capture: Capture::open(&work.join("capture")).unwrap(),
-        defaults: Defaults::default(),
+        defaults: arc_swap::ArcSwap::from_pointee(Defaults::default()),
         tls: Arc::new(TlsAuthority::generate().unwrap()),
         timeout: Duration::from_secs(5),
         first_data_timeout: Duration::from_millis(300),

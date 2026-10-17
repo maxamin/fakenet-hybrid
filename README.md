@@ -52,8 +52,10 @@ daemon/                              Java 21 / Camel 4.18 LTS (Maven)
   routes/siem.yaml                   SIEM outputs: ECS, Splunk HEC, syslog CEF (off until configured)
   rules-library/                     ready-made rules: staged HTTP C2, DNS TXT tasking, IRC, kill switch
   src/main/java/lab/fakenet/daemon/  entry point, link auth, processors, automatic warm-up
-deploy/                              systemd units & installers (Linux), scheduled tasks (Windows)
-scripts/package.sh                   release package
+deploy/linux/                        systemd units & installer
+deploy/windows/                      scheduled-task installer + WiX (MSI) source
+deploy/docker/                       Dockerfile (daemon + nucleus in one image)
+scripts/package.sh                   release package (.github/workflows/release.yml signs it)
 upstream/                            reference only, git-ignored: the FakeNet-NG clone and the
                                      archived fakenet-rs source (see upstream/README.md)
 ```
@@ -123,6 +125,11 @@ cd ..\daemon; mvn package
    `[defaults.tftp] root`. `fakenet-nucleus --check -c my.toml` validates the config.
    Coming from FakeNet-NG? `fakenet-nucleus --import-fakenet-ini default.ini -o my.toml`
    converts its config, listing anything without an equivalent as comments.
+
+   Edit `[defaults]` and send the nucleus **SIGHUP** to reload the built-in responses live
+   (new DNS/HTTP/TLS answers, latency, fingerprint matches) without a restart or dropping
+   connections; a `config_reloaded` event is logged. Structural changes (listeners, `bind`,
+   the diverter, the link, `[limits]`) still need a restart and are reported as ignored.
 
    Windows extras in `[diverter]`: `fix_dns` and `fix_gateway` (FakeNet-NG's
    ModifyLocalDNS and FixGateway, restored on stop), and `mode = "gateway"` with
@@ -385,11 +392,28 @@ inside the analysis VM:
   daemon's `fakenet` group only), and two systemd units. The daemon runs unprivileged and
   sandboxed; the nucleus runs as root and runs `--restore-network` after every stop. Then
   `systemctl enable --now fakenet-daemon fakenet-nucleus`.
-- **Windows:** `deploy\windows\install.ps1` (as Administrator) installs to
-  `C:\FakeNetHybrid` with startup scheduled tasks running as SYSTEM, and the secret
-  readable by SYSTEM and Administrators only. `uninstall.ps1` removes the tasks.
+- **Windows:** an **MSI** (`deploy/windows/fakenet-hybrid.wxs`, built in the release
+  workflow) installs the payload under `Program Files\FakeNet Hybrid`; its Start Menu
+  "Set up" shortcut runs `register-tasks.ps1` (elevated) to create the SYSTEM scheduled
+  tasks. Or, from an unpacked `.zip`, run `deploy\windows\install.ps1` as Administrator
+  (it copies to `C:\FakeNetHybrid` and calls the same `register-tasks.ps1`). Either way
+  runtime data (captures, audit, the link secret, the live config) goes under
+  `C:\ProgramData\FakeNetHybrid`, and the secret is readable by SYSTEM and Administrators
+  only. `uninstall.ps1` removes the tasks.
+- **Container:** `docker build -f deploy/docker/Dockerfile -t fakenet-hybrid .` builds one
+  image running both the daemon and the nucleus (they share loopback). Run it with the
+  service ports published, e.g. `docker run --rm -p 8080:8080 -p 53:53/udp -v
+  "$PWD/daemon/routes:/opt/fakenet/routes" fakenet-hybrid`. It serves the fake services
+  directly (no host diversion). Lab networks only.
 
-Neither script enables diversion: review the config first.
+Neither install script enables diversion: review the config first.
+
+**Signed releases:** pushing a `v*` tag runs `.github/workflows/release.yml`, which builds
+the Linux tarball and the Windows `.zip` + `.msi`, writes `SHA256SUMS`, signs every artifact
+with Sigstore **cosign** (keyless — the workflow's GitHub OIDC identity, no stored keys),
+and publishes a GitHub release. Each artifact ships a `.cosign.bundle`; verify with `cosign
+verify-blob --bundle <file>.cosign.bundle --certificate-identity-regexp ... --certificate-oidc-issuer
+https://token.actions.githubusercontent.com <file>`.
 
 ## Troubleshooting
 

@@ -72,7 +72,7 @@ pub async fn handle(data: &[u8], session: &mut Session, peer: SocketAddr) -> Opt
     };
     let result = if opcode == RRQ {
         let meta = json!({ "opcode": "RRQ", "filename": filename, "mode": mode, "file": true });
-        let default = default_content(&filename.replace('\\', "/"), session.ctx.defaults.tftp.root.as_deref()).0;
+        let default = default_content(&filename.replace('\\', "/"), session.ctx.defaults.load().tftp.root.as_deref()).0;
         let (contents, _) = session.answer(data, meta, default, false).await;
         session.log("download", json!({ "filename": filename, "mode": mode, "size": contents.len() }));
         send_file(&socket, &contents, session).await

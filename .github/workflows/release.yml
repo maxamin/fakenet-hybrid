@@ -1,0 +1,106 @@
+name: Release
+
+# Builds the Linux tarball and the Windows tarball + MSI on a version tag, signs every
+# artifact with Sigstore cosign (keyless: GitHub's OIDC identity, no stored keys), and
+# publishes a GitHub release. Verify an artifact with, e.g.:
+#   cosign verify-blob --bundle fakenet-hybrid-<v>-<target>.tar.gz.cosign.bundle \
+#     --certificate-identity-regexp '^https://github.com/<owner>/<repo>/\.github/workflows/release\.yml@refs/tags/' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com fakenet-hybrid-<v>-<target>.tar.gz
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # create the release
+  id-token: write   # cosign keyless (OIDC)
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '21' }
+      - name: Build the Linux package
+        run: scripts/package.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '21' }
+      - name: WinDivert 2.2.2
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip -OutFile $env:RUNNER_TEMP\windivert.zip
+          Expand-Archive $env:RUNNER_TEMP\windivert.zip -DestinationPath $env:RUNNER_TEMP
+          "WINDIVERT_PATH=$env:RUNNER_TEMP\WinDivert-2.2.2-A\x64" | Out-File -Append $env:GITHUB_ENV
+      - name: Build the nucleus & daemon
+        shell: pwsh
+        run: |
+          cd nucleus; cargo build --release -p fakenet-cli; cd ..
+          cd daemon; mvn -q -B -Dmaven.test.skip=true package; cd ..
+      - name: Stage the package layout
+        shell: pwsh
+        run: |
+          $ver = "${{ github.ref_name }}".TrimStart('v')
+          "VERSION=$ver" | Out-File -Append $env:GITHUB_ENV
+          $stage = "stage"
+          New-Item -ItemType Directory -Force "$stage\bin","$stage\daemon","$stage\config","$stage\deploy\windows" | Out-Null
+          Copy-Item nucleus\target\release\fakenet-nucleus.exe "$stage\bin\"
+          Copy-Item "$env:WINDIVERT_PATH\WinDivert.dll","$env:WINDIVERT_PATH\WinDivert64.sys" "$stage\bin\"
+          Copy-Item daemon\target\fakenet-daemon.jar "$stage\daemon\"
+          Copy-Item daemon\target\lib,daemon\routes "$stage\daemon\" -Recurse
+          Copy-Item nucleus\config\fakenet.toml,nucleus\config\default-files "$stage\config\" -Recurse
+          # register-tasks.ps1 & uninstall.ps1 at the install-folder root for the MSI shortcut
+          Copy-Item deploy\windows\register-tasks.ps1,deploy\windows\uninstall.ps1 "$stage\"
+          Copy-Item deploy\windows\install.ps1 "$stage\deploy\windows\"
+          Copy-Item deploy\windows\register-tasks.ps1,deploy\windows\uninstall.ps1 "$stage\deploy\windows\"
+          Copy-Item README.md,schema -Recurse "$stage\"
+      - name: Zip the Windows package
+        shell: pwsh
+        run: Compress-Archive -Path stage\* -DestinationPath "dist\fakenet-hybrid-$env:VERSION-x86_64-pc-windows-msvc.zip"
+      - name: Build the MSI
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix build deploy\windows\fakenet-hybrid.wxs -d Version=$env:VERSION -o "dist\fakenet-hybrid-$env:VERSION-x64.msi"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/*.zip
+            dist/*.msi
+
+  release:
+    needs: [linux, windows]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
+      - name: Collect artifacts & checksums
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.msi' \) -exec cp {} release/ \;
+          cd release && sha256sum * > SHA256SUMS
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign every artifact (keyless)
+        run: |
+          cd release
+          for f in *; do
+            [ "$f" = SHA256SUMS ] && continue
+            cosign sign-blob --yes --bundle "$f.cosign.bundle" "$f"
+          done
+          cosign sign-blob --yes --bundle SHA256SUMS.cosign.bundle SHA256SUMS
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" release/* --repo "${{ github.repository }}" --title "${{ github.ref_name }}" --generate-notes

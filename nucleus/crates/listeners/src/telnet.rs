@@ -66,7 +66,7 @@ pub fn shell_response(command: &str) -> String {
 }
 
 pub async fn handle(stream: BoxStream, mut session: Session) -> anyhow::Result<()> {
-    let banner = session.ctx.defaults.telnet.banner.clone();
+    let banner = session.ctx.defaults.load().telnet.banner.clone();
     let mut lines = Lines::new(stream);
     // IAC WILL SUPPRESS-GO-AHEAD; echo is left to the client, so line-based bots work too
     lines.send(&session, &[IAC, 251, 3]).await?;

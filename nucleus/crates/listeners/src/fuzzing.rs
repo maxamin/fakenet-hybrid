@@ -41,7 +41,7 @@ fn harness() -> &'static Harness {
             let ctx = Arc::new(Context {
                 link: Link::start(LinkConfig::default()),
                 capture: Capture::open_with(&dir, limits).expect("capture"),
-                defaults: Defaults::default(),
+                defaults: arc_swap::ArcSwap::from_pointee(Defaults::default()),
                 tls: Arc::new(TlsAuthority::generate().expect("CA")),
                 timeout: Duration::from_millis(100),
                 first_data_timeout: Duration::from_millis(20),

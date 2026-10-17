@@ -1,0 +1,10 @@
+# Build artifacts and local state: never send them to the Docker build context
+nucleus/target
+daemon/target
+dist
+upstream
+capture
+**/capture
+audit
+**/*.pcap
+.git

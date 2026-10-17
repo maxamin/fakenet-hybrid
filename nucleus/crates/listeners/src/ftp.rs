@@ -36,7 +36,7 @@ struct Ftp {
 }
 
 pub async fn handle(stream: BoxStream, mut session: Session) -> anyhow::Result<()> {
-    let defaults = session.ctx.defaults.ftp.clone();
+    let defaults = session.ctx.defaults.load().ftp.clone();
     let mut lines = Lines::new(stream);
     lines.send(&session, format!("220 {}\r\n", defaults.banner).as_bytes()).await?;
     let mut ftp = Ftp { cwd: "/".into(), user: None, data: DataChannel::None, rename_from: None, root: defaults.root };
@@ -140,7 +140,7 @@ impl Ftp {
         if !extended && !advertised.is_ipv4() {
             return "425 Use EPSV with IPv6\r\n".into();
         }
-        let (first, last) = session.ctx.defaults.ftp.passive_ports;
+        let (first, last) = session.ctx.defaults.load().ftp.passive_ports;
         let ports = (first != 0).then(|| first..=last.max(first)).into_iter().flatten().chain(std::iter::once(0));
         let mut listener = None;
         for port in ports {

@@ -108,7 +108,7 @@ where
     let (request, mut stream) = resolver.resolve_request().await?;
     let (max, mut held) = {
         let session = session.lock().await;
-        (session.ctx.defaults.http.max_body_bytes, session.ctx.limits.hold())
+        (session.ctx.defaults.load().http.max_body_bytes, session.ctx.limits.hold())
     };
     let mut body = Vec::new();
     while let Some(mut chunk) = stream.recv_data().await? {

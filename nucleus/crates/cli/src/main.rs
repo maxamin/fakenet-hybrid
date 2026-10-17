@@ -188,7 +188,7 @@ async fn main() -> anyhow::Result<()> {
     let ctx = Arc::new(Context {
         link: link.clone(),
         capture: capture.clone(),
-        defaults: config.defaults.clone(),
+        defaults: arc_swap::ArcSwap::from_pointee(config.defaults.clone()),
         tls,
         timeout: Duration::from_millis(config.nucleus.timeout_ms),
         first_data_timeout: Duration::from_millis(config.nucleus.first_data_timeout_ms),
@@ -197,7 +197,7 @@ async fn main() -> anyhow::Result<()> {
         limits: limits.clone(),
         known_fingerprints: Arc::new(config.known_fingerprints()?),
     });
-    let server = Server::start(ctx, config.nucleus.bind, &config.listeners).await?;
+    let server = Server::start(ctx.clone(), config.nucleus.bind, &config.listeners).await?;
     for (name, transport, address) in &server.bound {
         tracing::info!("{name}: {transport:?} {address}");
     }
@@ -230,6 +230,27 @@ async fn main() -> anyhow::Result<()> {
         }));
     }
     capture.log("nucleus_started", json!({ "listeners": server.bound.len(), "daemon": link.health() }));
+
+    // SIGHUP reloads [defaults] (the built-in responses) from the config file, live — no
+    // restart, no dropped connections. Structural changes (listeners, bind, diverter, the
+    // link, limits) still need a restart, and are reported as ignored.
+    #[cfg(unix)]
+    {
+        let (ctx, config_path) = (ctx.clone(), args.config.clone());
+        background.push(tokio::spawn(async move {
+            let Ok(mut hangups) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) else { return };
+            while hangups.recv().await.is_some() {
+                match Config::load(&config_path) {
+                    Ok(reloaded) => {
+                        ctx.defaults.store(std::sync::Arc::new(reloaded.defaults));
+                        ctx.capture.log("config_reloaded", json!({ "source": config_path.display().to_string() }));
+                        tracing::info!("Reloaded [defaults] from {} (structural changes need a restart)", config_path.display());
+                    }
+                    Err(e) => tracing::warn!("Ignoring the reload; {} is invalid: {e:#}", config_path.display()),
+                }
+            }
+        }));
+    }
 
     let outcome = match &sample {
         Some(sample) => Some(fakenet_cli::run::execute(sample, Duration::from_secs(args.timeout), &capture, shutdown_signal()).await),

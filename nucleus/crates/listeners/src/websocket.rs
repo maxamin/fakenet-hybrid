@@ -31,7 +31,7 @@ pub fn is_upgrade(request: &Request<Incoming>) -> bool {
 /// Answers an upgrade request: the daemon may refuse it, else 101 and the WebSocket session
 /// runs on its own
 pub async fn accept(mut request: Request<Incoming>, session: &mut Session) -> Response<Full<Bytes>> {
-    let defaults = session.ctx.defaults.http.clone();
+    let defaults = session.ctx.defaults.load().http.clone();
     let header = |name: &str| request.headers().get(name).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
     let key = header("sec-websocket-key");
     let protocols: Vec<String> = header("sec-websocket-protocol").split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect();

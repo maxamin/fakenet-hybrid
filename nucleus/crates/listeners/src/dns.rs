@@ -165,7 +165,7 @@ pub async fn answer(message: &[u8], session: &mut Session) -> Option<Vec<u8>> {
     let qtype = query.query_type();
     session.client_data(message);
 
-    let defaults = session.ctx.defaults.dns.clone();
+    let defaults = session.ctx.defaults.load().dns.clone();
     let meta = json!({ "qname": qname.trim_end_matches('.'), "qtype": qtype.to_string() });
     let action = session.decide(message, meta).await;
     let answer = match action.and_then(|a| a.response) {

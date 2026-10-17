@@ -16,7 +16,8 @@ fn default_reply(session: &Session, data: &[u8]) -> Vec<u8> {
     if let Some((_, RawResponse::Static(bytes))) = session.custom.as_deref().and_then(|c| c.raw.as_ref()) {
         return bytes.clone();
     }
-    let defaults = &session.ctx.defaults.raw;
+    let guard = session.ctx.defaults.load();
+    let defaults = &guard.raw;
     match defaults.mode {
         RawMode::Echo => data.to_vec(),
         RawMode::Static => defaults.response.as_bytes().to_vec(),

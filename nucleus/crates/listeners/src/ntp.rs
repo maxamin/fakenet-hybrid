@@ -48,7 +48,7 @@ pub async fn handle(data: &[u8], session: &mut Session) -> Option<Vec<u8>> {
         return None;
     }
     let version = (data[0] >> 3) & 0x07;
-    let mut offset = session.ctx.defaults.ntp.time_offset;
+    let mut offset = session.ctx.defaults.load().ntp.time_offset;
     let answer = session.decide(data, json!({ "version": version, "default_offset": offset })).await.and_then(|a| a.response);
     let packet = match answer {
         Some(bytes) if bytes.len() == 48 => bytes,
