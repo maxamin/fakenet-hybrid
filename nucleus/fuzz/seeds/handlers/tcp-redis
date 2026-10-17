@@ -1,0 +1,13 @@
+*2
+$4
+AUTH
+$3
+pwd
+PING
+*3
+$6
+CONFIG
+$3
+SET
+$3
+dir

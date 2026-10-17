@@ -1,0 +1,7 @@
+USER anonymous
+PASS x
+CWD /a
+PASV
+RETR f.exe
+PORT 10,13,37,2,4,1
+QUIT

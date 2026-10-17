@@ -6,3 +6,7 @@ dist/
 *.secret
 upstream/flare-fakenet-ng/
 upstream/*.tar.gz
+nucleus/fuzz/target/
+nucleus/fuzz/corpus/
+nucleus/fuzz/artifacts/
+nucleus/fuzz/coverage/

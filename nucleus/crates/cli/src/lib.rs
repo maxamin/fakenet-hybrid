@@ -32,6 +32,8 @@ pub struct Config {
     pub defaults: Defaults,
     #[serde(default)]
     pub diverter: DiverterConfig,
+    #[serde(default)]
+    pub explorer: fakenet_explorer::ExplorerConfig,
     #[serde(default, rename = "listener")]
     pub listeners: Vec<ListenerConfig>,
 }
@@ -132,6 +134,10 @@ impl Config {
                 resolve(custom);
             }
         }
+        let explorer = &mut self.explorer;
+        for path in explorer.templates.iter_mut().chain(explorer.samples.iter_mut()).chain(explorer.rea.iter_mut()).chain(explorer.coverage_dir.iter_mut()) {
+            resolve(path);
+        }
     }
 
     /// Enforces the lab-safety rules: control interfaces on loopback only
@@ -227,14 +233,62 @@ fn loopback_url(url: &str) -> bool {
     host.eq_ignore_ascii_case("localhost") || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
-/// The HTML report of event logs (in order, e.g. rotated ones first)
+/// The HTML report of event logs (in order, e.g. rotated ones first), with the explorer's
+/// map if there is one next to them
 pub fn write_report(event_files: &[PathBuf], output: &Path) -> anyhow::Result<()> {
     let mut records = Vec::new();
     for file in event_files {
         let text = std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
         records.extend(text.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()));
     }
-    std::fs::write(output, fakenet_capture::report::render(&records)).with_context(|| format!("writing {}", output.display()))
+    let map = event_files
+        .last()
+        .and_then(|f| f.parent())
+        .and_then(|dir| std::fs::read_to_string(dir.join("explorer-map.json")).ok())
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+    std::fs::write(output, fakenet_capture::report::render_with_map(&records, map.as_ref())).with_context(|| format!("writing {}", output.display()))
+}
+
+/// Feeds coverage written by a tracer into the explorer: new drcov files (once they've
+/// stopped growing) and new lines of JSONL files. Polls; runs until dropped.
+pub async fn watch_coverage(explorer: Arc<fakenet_explorer::Explorer>, dir: PathBuf, capture: Arc<fakenet_capture::Capture>) {
+    use std::collections::HashMap;
+    let mut done: std::collections::HashSet<PathBuf> = Default::default();
+    let mut sizes: HashMap<PathBuf, u64> = HashMap::new();
+    let mut offsets: HashMap<PathBuf, usize> = HashMap::new();
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            if name.ends_with(".jsonl") {
+                let Ok(text) = std::fs::read_to_string(&path) else { continue };
+                let start = offsets.get(&path).copied().unwrap_or(0).min(text.len());
+                // Only complete lines; a partial last line waits for the next poll
+                let complete = text[start..].rfind('\n').map(|i| start + i + 1).unwrap_or(start);
+                for line in text[start..complete].lines().filter(|l| !l.trim().is_empty()) {
+                    match explorer.ingest_coverage_line(line) {
+                        Ok(new) if new > 0 => capture.log("coverage", json!({ "source": name, "new_functions": new })),
+                        Ok(_) => {}
+                        Err(e) => tracing::debug!("coverage line in {name}: {e}"),
+                    }
+                }
+                offsets.insert(path, complete);
+            } else if name.ends_with(".log") && !done.contains(&path) {
+                // drcov writes at process exit: wait until the size is stable
+                if sizes.insert(path.clone(), size) != Some(size) {
+                    continue;
+                }
+                done.insert(path.clone());
+                match std::fs::read(&path).map_err(anyhow::Error::from).and_then(|data| explorer.ingest_drcov(&data, &name)) {
+                    Ok(new) => capture.log("coverage", json!({ "source": name, "new_functions": new })),
+                    Err(e) => tracing::warn!("coverage file {name}: {e:#}"),
+                }
+            }
+        }
+    }
 }
 
 /// Writes a new random secret readable only by its owner

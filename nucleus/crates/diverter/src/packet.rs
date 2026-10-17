@@ -119,7 +119,8 @@ pub fn echo_reply(packet: &[u8]) -> Option<Vec<u8>> {
     match packet.first()? >> 4 {
         4 => {
             let header = usize::from(packet[0] & 0x0f) * 4;
-            if packet.len() < header + 8 || packet[9] != 1 || packet[header] != 8 {
+            // The header length field is the sender's claim: never below the 20-byte minimum
+            if header < 20 || packet.len() < header + 8 || packet[9] != 1 || packet[header] != 8 {
                 return None;
             }
             let (src, dst) = (packet[12..16].to_vec(), packet[16..20].to_vec());
@@ -247,6 +248,9 @@ pub mod tests {
         assert_eq!(internet_checksum(&reply[20..], 0), 0);
         assert_eq!(&reply[24..], &request[24..]); // Same id, sequence & data
         assert!(echo_reply(&reply).is_none()); // Replies aren't answered
+        // Found by fuzzing: a header length below the minimum used to read out of bounds
+        assert!(echo_reply(&[0x40, 0, 0, 0, 0, 0, 0, 0, 0x08]).is_none());
+        assert!(echo_reply(&[0x41, 0, 0, 0, 0, 0, 0, 0, 8, 1, 0, 0]).is_none());
         let mut v6 = vec![0x60, 0, 0, 0, 0, 8, 58, 64];
         v6.extend([0u8; 15]);
         v6.push(1);

@@ -1,0 +1,338 @@
+# Built-in response templates for the explorer. Each template is a candidate answer to one
+# protocol step; the explorer picks among the applicable ones (a bandit learns which unlock
+# new behaviour) and fills the slots from hints (the sample's strings, REA's analysis, what
+# the sample sent).
+#
+# Format: name, protocol (as in events), body (the response, in the protocol's response
+# format: see daemon/routes/decisions.yaml), optional close = true, and optional `when`
+# conditions on the event's meta fields (string match, case-insensitive; `false` also
+# matches a missing field).
+#
+# Slots: {command} {key} {token} {string} {url} {domain} {path} {int} {ip} {port} {random}
+#   {offset} (NTP: a time shift) {mirror} (the request's payload) {mutate} (a mutated copy)
+#   {mz} (a tiny PE stub) {session} {param} (first IRC parameter) {meta:FIELD}
+# Functions, applied right to left: {b64:x} {hex:x} {json:x} (JSON string escape)
+#   {urlenc:x} {upper:x} {lower:x} {len8:x} {len16be:x} {len16le:x} {len32be:x} {len32le:x}
+#   {bulk:x} (a Redis bulk string). {{ and }} are literal braces.
+
+# --- HTTP: complete raw responses ---
+[[template]]
+name = "http-token"
+protocol = "http"
+body = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n{command}"
+
+[[template]]
+name = "http-kv"
+protocol = "http"
+body = "HTTP/1.1 200 OK\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\n{key}={urlenc:command}&{key}={int}"
+
+[[template]]
+name = "http-json"
+protocol = "http"
+body = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{{\"{json:key}\":\"{json:command}\"}}"
+
+[[template]]
+name = "http-json-task"
+protocol = "http"
+body = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{{\"status\":\"ok\",\"id\":\"{session}\",\"data\":{{\"{json:key}\":\"{json:command}\",\"{json:key}\":{int},\"url\":\"{json:url}\"}}}}"
+
+[[template]]
+name = "http-b64"
+protocol = "http"
+body = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n{b64:command}"
+
+[[template]]
+name = "http-url"
+protocol = "http"
+body = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n{url}"
+
+[[template]]
+name = "http-redirect"
+protocol = "http"
+body = "HTTP/1.1 302 Found\r\nLocation: {url}\r\n\r\n"
+
+[[template]]
+name = "http-exe"
+protocol = "http"
+body = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"{command}.exe\"\r\n\r\n{mz}"
+
+[[template]]
+name = "http-not-found"
+protocol = "http"
+body = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\n\r\n{command}"
+
+[[template]]
+name = "http-server-error"
+protocol = "http"
+body = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\n{command}"
+
+[[template]]
+name = "http-unavailable"
+protocol = "http"
+body = "HTTP/1.1 503 Service Unavailable\r\nRetry-After: {int}\r\n\r\n"
+
+[[template]]
+name = "http-auth"
+protocol = "http"
+body = "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"{command}\"\r\n\r\n"
+
+[[template]]
+name = "http-cookie"
+protocol = "http"
+body = "HTTP/1.1 200 OK\r\nSet-Cookie: {key}={urlenc:command}; Path=/\r\n\r\nOK"
+
+[[template]]
+name = "http-header"
+protocol = "http"
+body = "HTTP/1.1 200 OK\r\nX-{key}: {command}\r\n\r\nOK"
+
+[[template]]
+name = "http-mirror"
+protocol = "http"
+body = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\r\n{mirror}"
+
+[[template]]
+name = "http-mutate"
+protocol = "http"
+body = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\r\n{mutate}"
+
+[[template]]
+name = "http-empty"
+protocol = "http"
+body = "HTTP/1.1 204 No Content\r\n\r\n"
+
+# --- DNS: answer lines ---
+[[template]]
+name = "dns-a-random"
+protocol = "dns"
+body = "A {ip}"
+
+[[template]]
+name = "dns-a-loopback"
+protocol = "dns"
+body = "A 127.0.0.1"
+
+[[template]]
+name = "dns-a-zero"
+protocol = "dns"
+body = "A 0.0.0.0"
+
+[[template]]
+name = "dns-txt-command"
+protocol = "dns"
+when = { qtype = "TXT" }
+body = "TXT {command}"
+
+[[template]]
+name = "dns-txt-b64"
+protocol = "dns"
+when = { qtype = "TXT" }
+body = "TXT {b64:token}"
+
+[[template]]
+name = "dns-cname"
+protocol = "dns"
+body = "CNAME {domain}"
+
+[[template]]
+name = "dns-nxdomain"
+protocol = "dns"
+body = "NXDOMAIN"
+
+[[template]]
+name = "dns-mx"
+protocol = "dns"
+when = { qtype = "MX" }
+body = "MX 10 {domain}"
+
+# --- Raw TCP/UDP: bytes ---
+[[template]]
+name = "raw-echo"
+protocol = "raw"
+body = "{mirror}"
+
+[[template]]
+name = "raw-mutate"
+protocol = "raw"
+body = "{mutate}"
+
+[[template]]
+name = "raw-command"
+protocol = "raw"
+body = "{command}"
+
+[[template]]
+name = "raw-command-line"
+protocol = "raw"
+body = "{command}\n"
+
+[[template]]
+name = "raw-command-url"
+protocol = "raw"
+body = "{command} {url}\r\n"
+
+[[template]]
+name = "raw-len8"
+protocol = "raw"
+body = "{len8:command}"
+
+[[template]]
+name = "raw-len16be"
+protocol = "raw"
+body = "{len16be:command}"
+
+[[template]]
+name = "raw-len16le"
+protocol = "raw"
+body = "{len16le:command}"
+
+[[template]]
+name = "raw-len32be"
+protocol = "raw"
+body = "{len32be:command}"
+
+[[template]]
+name = "raw-len32le"
+protocol = "raw"
+body = "{len32le:command}"
+
+[[template]]
+name = "raw-json"
+protocol = "raw"
+body = "{{\"{json:key}\":\"{json:command}\"}}\n"
+
+[[template]]
+name = "raw-kv"
+protocol = "raw"
+body = "{key}={command}\n"
+
+[[template]]
+name = "raw-b64"
+protocol = "raw"
+body = "{b64:command}\n"
+
+[[template]]
+name = "raw-close"
+protocol = "raw"
+close = true
+body = ""
+
+# --- IRC: lines a C2 operator would send a bot ---
+[[template]]
+name = "irc-privmsg-command"
+protocol = "irc"
+when = { command = "JOIN" }
+body = ":boss!boss@c2 PRIVMSG {param} :{command}\r\n"
+
+[[template]]
+name = "irc-privmsg-command-url"
+protocol = "irc"
+when = { command = "JOIN" }
+body = ":boss!boss@c2 PRIVMSG {param} :{command} {url}\r\n"
+
+[[template]]
+name = "irc-topic"
+protocol = "irc"
+when = { command = "JOIN" }
+body = ":irc.fakenet.local 332 bot {param} :{command} {url}\r\n"
+
+[[template]]
+name = "irc-notice"
+protocol = "irc"
+body = ":boss!boss@c2 NOTICE bot :{command}\r\n"
+
+# --- FTP: downloaded files (RETR), and replies ---
+[[template]]
+name = "ftp-file-exe"
+protocol = "ftp"
+when = { file = true }
+body = "{mz}"
+
+[[template]]
+name = "ftp-file-command"
+protocol = "ftp"
+when = { file = true }
+body = "{command}\n"
+
+[[template]]
+name = "ftp-file-script"
+protocol = "ftp"
+when = { file = true }
+body = "cmd.exe /c {command} {url}\r\n"
+
+[[template]]
+name = "ftp-reject"
+protocol = "ftp"
+when = { file = false }
+body = "550 {command}\r\n"
+
+# --- Mail ---
+[[template]]
+name = "smtp-reject"
+protocol = "smtp"
+body = "550 5.7.1 {command}\r\n"
+
+[[template]]
+name = "smtp-tempfail"
+protocol = "smtp"
+body = "451 4.3.0 {command}\r\n"
+
+[[template]]
+name = "pop3-message"
+protocol = "pop3"
+when = { command = "RETR" }
+body = "+OK\r\nSubject: {command}\r\n\r\n{url}\r\n{command}\r\n.\r\n"
+
+[[template]]
+name = "imap-no"
+protocol = "imap"
+body = "{meta:tag} NO {command}\r\n"
+
+# --- Shells & stores ---
+[[template]]
+name = "telnet-output"
+protocol = "telnet"
+body = "{command}\r\n# "
+
+[[template]]
+name = "telnet-url"
+protocol = "telnet"
+body = "{url}\r\n# "
+
+[[template]]
+name = "redis-status"
+protocol = "redis"
+body = "+{command}\r\n"
+
+[[template]]
+name = "redis-bulk"
+protocol = "redis"
+body = "{bulk:command}"
+
+[[template]]
+name = "redis-error"
+protocol = "redis"
+body = "-ERR {command}\r\n"
+
+# --- Time & files over UDP ---
+[[template]]
+name = "ntp-offset"
+protocol = "ntp"
+body = "{offset}"
+
+[[template]]
+name = "tftp-exe"
+protocol = "tftp"
+body = "{mz}"
+
+[[template]]
+name = "tftp-command"
+protocol = "tftp"
+body = "{command}\n"
+
+# --- Proxies ---
+[[template]]
+name = "socks-refuse"
+protocol = "socks"
+close = true
+body = ""

@@ -170,6 +170,7 @@ async fn nucleus_and_camel_daemon() {
         timeout: Duration::from_secs(5),
         first_data_timeout: Duration::from_millis(300),
         original: None,
+        explorer: None,
     });
     let server = Server::start(ctx, "127.0.0.1".parse().unwrap(), &[
         listener("http", Protocol::Http, Transport::Tcp),

@@ -1,0 +1,10 @@
+EHLO x
+AUTH PLAIN AGEAYg==
+MAIL FROM:<a@b>
+RCPT TO:<c@d>
+DATA
+Subject: s
+
+body
+.
+QUIT

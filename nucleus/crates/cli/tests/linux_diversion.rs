@@ -66,6 +66,7 @@ async fn diverts_inside_a_network_namespace() {
         timeout: Duration::from_secs(5),
         first_data_timeout: Duration::from_millis(300),
         original: None,
+        explorer: None,
     });
     let listeners = [
         listener("http", Some(Protocol::Http), Transport::Tcp, 80),

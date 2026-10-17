@@ -125,11 +125,17 @@ pub(crate) async fn answer(session: &mut Session, parts: hyper::http::request::P
         }
         other => {
             let close = other.is_some_and(|a| a.close);
+            let check = defaults.connectivity_checks.then(|| connectivity_check(&host, parts.uri.path())).flatten();
             match custom_response(session, &parts, &host, &body).await {
                 Some(response) => response,
+                None if check.is_some() => {
+                    let (status, content_type, content) = check.unwrap_or_default();
+                    session.log("connectivity_check", json!({ "host": host, "path": parts.uri.path() }));
+                    build(StatusCode::from_u16(status).unwrap_or(StatusCode::OK), &[("content-type", content_type)], Bytes::from_static(content.as_bytes()), &server_for(&defaults.server_header, &host), close)
+                }
                 None => {
                     let (content, content_type) = default_content(parts.uri.path(), defaults.webroot.as_deref());
-                    build(StatusCode::OK, &[("content-type", content_type)], Bytes::from(content), &defaults.server_header, close)
+                    build(StatusCode::OK, &[("content-type", content_type)], Bytes::from(content), &server_for(&defaults.server_header, &host), close)
                 }
             }
         }
@@ -161,6 +167,47 @@ async fn custom_response(session: &Session, parts: &hyper::http::request::Parts,
             }
         }
     })
+}
+
+/// OS & browser connectivity checks, answered exactly as the real services do:
+/// (status, content type, body)
+pub fn connectivity_check(host: &str, path: &str) -> Option<(u16, &'static str, &'static str)> {
+    let host = host.split(':').next().unwrap_or(host).to_ascii_lowercase();
+    Some(match (host.as_str(), path) {
+        ("www.msftncsi.com", "/ncsi.txt") => (200, "text/plain", "Microsoft NCSI"),
+        ("www.msftconnecttest.com", "/connecttest.txt") => (200, "text/plain", "Microsoft Connect Test"),
+        ("www.msftconnecttest.com", "/redirect") => (200, "text/html", ""),
+        ("connectivitycheck.gstatic.com" | "clients3.google.com" | "www.gstatic.com" | "connectivitycheck.android.com", "/generate_204") => (204, "text/plain", ""),
+        ("captive.apple.com", "/hotspot-detect.html" | "/") | ("www.apple.com", "/library/test/success.html") => {
+            (200, "text/html", "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>")
+        }
+        ("detectportal.firefox.com", "/success.txt") => (200, "text/plain", "success\n"),
+        ("connectivity-check.ubuntu.com" | "nmcheck.gnome.org", _) => (204, "text/plain", ""),
+        _ => return None,
+    })
+}
+
+/// "auto": the server software a host would plausibly run, else the configured header
+pub fn server_for(configured: &str, host: &str) -> String {
+    if configured != "auto" {
+        return configured.to_string();
+    }
+    let host = host.split(':').next().unwrap_or(host).to_ascii_lowercase();
+    let suffix = |s: &str| host == s || host.ends_with(&format!(".{s}"));
+    if ["microsoft.com", "msftncsi.com", "msftconnecttest.com", "live.com", "office.com", "windows.com", "windowsupdate.com", "azure.com"].iter().any(|s| suffix(s)) {
+        "Microsoft-IIS/10.0"
+    } else if ["google.com", "gstatic.com", "googleapis.com", "youtube.com"].iter().any(|s| suffix(s)) {
+        "gws"
+    } else if ["apple.com", "icloud.com"].iter().any(|s| suffix(s)) {
+        "Apache"
+    } else if ["cloudflare.com"].iter().any(|s| suffix(s)) {
+        "cloudflare"
+    } else if ["amazonaws.com", "amazon.com"].iter().any(|s| suffix(s)) {
+        "AmazonS3"
+    } else {
+        "nginx"
+    }
+    .to_string()
 }
 
 fn build(status: StatusCode, headers: &[(&str, &str)], body: Bytes, server: &str, close: bool) -> Response<Full<Bytes>> {
@@ -308,6 +355,16 @@ mod tests {
         assert_eq!(unparseable.status(), StatusCode::OK);
         assert_eq!(futures_body(&unparseable), "just text");
         assert_eq!(unparseable.headers()["connection"], "close");
+    }
+
+    #[test]
+    fn answers_connectivity_checks_like_the_real_services() {
+        assert_eq!(connectivity_check("www.msftncsi.com", "/ncsi.txt"), Some((200, "text/plain", "Microsoft NCSI")));
+        assert_eq!(connectivity_check("connectivitycheck.gstatic.com:80", "/generate_204").map(|c| c.0), Some(204));
+        assert!(connectivity_check("c2.evil.example", "/ncsi.txt").is_none());
+        assert_eq!(server_for("auto", "login.microsoft.com"), "Microsoft-IIS/10.0");
+        assert_eq!(server_for("auto", "evil.example"), "nginx");
+        assert_eq!(server_for("Apache/2.4", "www.google.com"), "Apache/2.4");
     }
 
     #[test]

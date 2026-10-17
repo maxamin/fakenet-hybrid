@@ -174,7 +174,10 @@ pub fn convert(ini: &str, base: &Path) -> anyhow::Result<String> {
 
     let mut out = String::from("# Converted from a FakeNet-NG configuration by fakenet-nucleus --import-fakenet-ini.\n# Review it; [nucleus] and [daemon] use their defaults (see config/fakenet.toml).\n");
     for note in &notes {
-        out.push_str(&format!("# NOTE: {note}\n"));
+        // Notes quote the input: control characters (and line breaks, which would end the
+        // comment and inject config) are escaped
+        let safe: String = note.chars().flat_map(|c| if c.is_control() { c.escape_default().collect::<Vec<_>>() } else { vec![c] }).collect();
+        out.push_str(&format!("# NOTE: {safe}\n"));
     }
     out.push('\n');
     out.push_str(&toml::to_string(&config)?);
@@ -206,6 +209,21 @@ mod tests {
         // The plan sends unlisted traffic to the converted proxy listeners
         let plan = config.plan();
         assert_eq!((plan.tcp_default, plan.udp_default), (Some(38926), Some(38926)));
+    }
+}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+
+    /// Found by fuzzing: a control character in a quoted value made the output invalid TOML;
+    /// a line break could have injected settings
+    #[test]
+    fn quoted_values_cant_break_out_of_comments() {
+        let ini = "[Diverter]\nNetworkMode: SingleHost\n[HTTP]\nEnabled: True\nPort: 8\u{10}\nProtocol: TCP\nListener: HTTPListener\n[X]\nEnabled: True\nPort: 1\nListener: Weird\n  [diverter]\n  enabled = true\n";
+        let toml_text = convert(ini, Path::new("/base")).unwrap();
+        let table: toml::Table = toml_text.parse().unwrap_or_else(|e| panic!("{e}\n{toml_text}"));
+        assert!(table.get("diverter").and_then(|d| d.get("enabled")).is_none(), "{toml_text}");
     }
 }
 

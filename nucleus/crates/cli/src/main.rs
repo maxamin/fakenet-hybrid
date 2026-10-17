@@ -100,6 +100,15 @@ async fn main() -> anyhow::Result<()> {
         true => Some(Diverter::start(&config.diverter, config.plan())?),
         false => None,
     };
+    let explorer = match config.explorer.enabled {
+        true => {
+            let explorer = Arc::new(fakenet_explorer::Explorer::load(config.explorer.clone())?);
+            let map = explorer.map();
+            tracing::info!("Explorer on (rate {}); hints: {}", explorer.config().rate, map["hints"]);
+            Some(explorer)
+        }
+        false => None,
+    };
     let link = Link::start(config.link(secret.as_deref()));
     let ctx = Arc::new(Context {
         link: link.clone(),
@@ -109,6 +118,7 @@ async fn main() -> anyhow::Result<()> {
         timeout: Duration::from_millis(config.nucleus.timeout_ms),
         first_data_timeout: Duration::from_millis(config.nucleus.first_data_timeout_ms),
         original: diverter.as_ref().and_then(Diverter::original_lookup),
+        explorer: explorer.clone(),
     });
     let server = Server::start(ctx, config.nucleus.bind, &config.listeners).await?;
     for (name, transport, address) in &server.bound {
@@ -119,6 +129,20 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("binding the health endpoint to {}", config.nucleus.health))?;
     tracing::info!("health: http://{}/health; CA certificate: {}", config.nucleus.health, ca_path.display());
     let health_task = tokio::spawn(serve_health(health, link.clone(), Arc::new(server.bound.clone()), secret.clone()));
+    let mut background = Vec::new();
+    if let Some(explorer) = &explorer {
+        if let Some(dir) = config.explorer.coverage_dir.clone() {
+            background.push(tokio::spawn(fakenet_cli::watch_coverage(explorer.clone(), dir, capture.clone())));
+        }
+        // The map, kept current for analysts (and the report)
+        let (explorer, path) = (explorer.clone(), capture.dir().join("explorer-map.json"));
+        background.push(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                let _ = std::fs::write(&path, serde_json::to_string_pretty(&explorer.map()).unwrap_or_default());
+            }
+        }));
+    }
     capture.log("nucleus_started", json!({ "listeners": server.bound.len(), "daemon": link.health() }));
 
     shutdown_signal().await;
@@ -127,6 +151,15 @@ async fn main() -> anyhow::Result<()> {
     drop(server);
     if let Some(diverter) = diverter {
         diverter.stop()?;
+    }
+    for task in background {
+        task.abort();
+    }
+    if let Some(explorer) = &explorer {
+        let path = capture.dir().join("explorer-map.json");
+        if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&explorer.map()).unwrap_or_default()) {
+            tracing::warn!("Could not write {}: {e}", path.display());
+        }
     }
     capture.log("nucleus_stopped", json!({ "daemon": link.health() }));
     let report = capture.dir().join("report.html");

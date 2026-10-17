@@ -1,0 +1,16 @@
+[package]
+name = "fakenet-explorer"
+description = "Response exploration: template-driven, feedback-guided fake answers that drive a sample down more code paths, and the map of what each answer unlocked"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fakenet-schema.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+base64.workspace = true
+ring.workspace = true

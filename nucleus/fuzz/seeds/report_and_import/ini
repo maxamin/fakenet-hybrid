@@ -1,0 +1,7 @@
+[Diverter]
+NetworkMode: SingleHost
+[HTTP]
+Enabled: True
+Port: 80
+Protocol: TCP
+Listener: HTTPListener

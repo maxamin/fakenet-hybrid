@@ -682,3 +682,41 @@ async fn h2_handshake<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 
         let _ = connection.await;
     })
 }
+
+#[tokio::test]
+async fn explores_answers_the_daemon_leaves_to_the_default() {
+    use fakenet_explorer::{Explorer, ExplorerConfig, Hints};
+    let hints = Hints::from_binary(b"\x00download\x00task=\x00http://c2.evil.example/stage2.bin\x00");
+    let config = ExplorerConfig { enabled: true, rate: 1.0, seed: 3, protocols: vec!["http".into(), "dns".into()], ..ExplorerConfig::default() };
+    let templates = fakenet_explorer::templates::parse(fakenet_explorer::templates::DEFAULT_TEMPLATES).unwrap();
+    let explorer = std::sync::Arc::new(Explorer::new(config, templates, hints));
+    let listeners = vec![listener("http", Some(Protocol::Http), Transport::Tcp, false), listener("dns", Some(Protocol::Dns), Transport::Udp, false)];
+    // The daemon scripts /gate.php only: everything else is the explorer's
+    let nucleus = Nucleus::start_full("explorer", fake_daemon(Duration::ZERO, gate_rule).await, &listeners, Default::default(), Some(explorer.clone())).await;
+    wait_connected().await;
+
+    let mut bodies = std::collections::BTreeSet::new();
+    for i in 0..12 {
+        let mut stream = TcpStream::connect(nucleus.address("http")).await.unwrap();
+        stream.write_all(format!("GET /poll?n={i} HTTP/1.1\r\nHost: c2.evil.example\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        bodies.insert(response.split(|&b| b == b'\n').next().unwrap_or_default().to_vec());
+    }
+    // The analyst's rule still wins
+    let mut stream = TcpStream::connect(nucleus.address("http")).await.unwrap();
+    stream.write_all(b"GET /gate.php HTTP/1.1\r\nHost: c2\r\nConnection: close\r\n\r\n").await.unwrap();
+    let mut gate = String::new();
+    stream.read_to_string(&mut gate).await.unwrap();
+    assert!(gate.ends_with("task=sleep"), "{gate}");
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(bodies.len() >= 3, "explored answers should vary: {bodies:?}");
+    let explored = nucleus.kinds("explored");
+    assert!(explored.len() >= 10, "{}", explored.len());
+    assert!(explored.iter().all(|e| e["template"].as_str().unwrap().starts_with("http-")));
+    let decisions: Vec<_> = nucleus.kinds("decision").iter().map(|d| d["route"].as_str().unwrap_or("").to_string()).collect();
+    assert!(decisions.contains(&"fake-http".to_string()) || decisions.iter().any(|r| r == "fake-http"), "{decisions:?}");
+    let map = explorer.map();
+    assert!(map["proposals"].as_u64().unwrap() >= 10 && map["behaviors"].as_u64().unwrap() >= 3, "{map:#}");
+}

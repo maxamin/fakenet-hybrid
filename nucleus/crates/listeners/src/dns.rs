@@ -22,6 +22,88 @@ pub enum Answer {
     Code(ResponseCode),
 }
 
+/// Names Windows checks to decide it's online (NCSI): answered with the real addresses
+const NCSI: &[(&str, RecordType, &str)] = &[
+    ("dns.msftncsi.com", RecordType::A, "131.107.255.255"),
+    ("dns.msftncsi.com", RecordType::AAAA, "fd3e:4f5a:5b81::1"),
+];
+
+/// Per-domain addresses handed out, for PTR answers
+static REVERSE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<Ipv4Addr, String>>> = std::sync::OnceLock::new();
+
+/// A stable address for `name` inside `pool` (CIDR); None if the pool is malformed
+pub fn pool_address(name: &str, pool: &str) -> Option<Ipv4Addr> {
+    let (base, bits) = pool.split_once('/')?;
+    let base: Ipv4Addr = base.parse().ok()?;
+    let bits: u32 = bits.parse().ok().filter(|b| *b <= 30)?;
+    let size = 1u64 << (32 - bits);
+    // FNV-1a: stable across runs, so the same name always gets the same address
+    let hash = name.trim_end_matches('.').to_ascii_lowercase().bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+    let offset = 1 + hash % (size - 2); // Not the network or broadcast address
+    let network = u32::from(base) & !((size - 1) as u32);
+    Some(Ipv4Addr::from(network + offset as u32))
+}
+
+/// Random-looking labels, as domain generation algorithms produce ("xkqjzwvbtrnp")
+pub fn looks_random(name: &str) -> bool {
+    let label = name.trim_end_matches('.').split('.').next().unwrap_or("").to_ascii_lowercase();
+    if label.len() < 10 || !label.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return false;
+    }
+    let letters: Vec<char> = label.chars().filter(char::is_ascii_alphabetic).collect();
+    let vowels = letters.iter().filter(|c| "aeiouy".contains(**c)).count();
+    let digits = label.len() - letters.len();
+    let mut run = 0;
+    let mut longest_consonants = 0;
+    for c in label.chars() {
+        if c.is_ascii_alphabetic() && !"aeiouy".contains(c) {
+            run += 1;
+            longest_consonants = longest_consonants.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    let vowel_ratio = vowels as f64 / letters.len().max(1) as f64;
+    longest_consonants >= 5 || vowel_ratio < 0.2 || (digits >= 3 && letters.len() >= 5 && digits * 4 >= label.len())
+}
+
+/// The configured default answer for a query
+pub fn default_answer_for(qname: &str, qtype: RecordType, defaults: &DnsDefaults) -> Answer {
+    let name = qname.trim_end_matches('.').to_ascii_lowercase();
+    if let Some((_, _, address)) = NCSI.iter().find(|(n, t, _)| *n == name && *t == qtype) {
+        return match address.parse::<std::net::IpAddr>() {
+            Ok(std::net::IpAddr::V4(v4)) => Answer::Records(vec![RData::A(A(v4))]),
+            Ok(std::net::IpAddr::V6(v6)) => Answer::Records(vec![RData::AAAA(AAAA(v6))]),
+            Err(_) => Answer::Records(vec![]),
+        };
+    }
+    if defaults.nxdomain_random && looks_random(&name) {
+        return Answer::Code(ResponseCode::NXDomain);
+    }
+    if qtype == RecordType::PTR && defaults.per_domain {
+        let octets: Vec<u8> = name.strip_suffix(".in-addr.arpa").map(|r| r.split('.').filter_map(|o| o.parse().ok()).collect()).unwrap_or_default();
+        if let [d, c, b, a] = octets[..] {
+            let ip = Ipv4Addr::new(a, b, c, d);
+            let known = REVERSE.get().and_then(|m| m.lock().ok()?.get(&ip).cloned());
+            if let Some(known) = known.and_then(|n| Name::from_ascii(format!("{n}.")).ok()) {
+                return Answer::Records(vec![RData::PTR(PTR(known))]);
+            }
+        }
+    }
+    if defaults.per_domain && matches!(qtype, RecordType::A | RecordType::ANY) {
+        if let Some(ip) = pool_address(&name, &defaults.pool) {
+            let reverse = REVERSE.get_or_init(Default::default);
+            if let Ok(mut reverse) = reverse.lock() {
+                if reverse.len() < 100_000 {
+                    reverse.insert(ip, name.clone());
+                }
+            }
+            return Answer::Records(vec![RData::A(A(ip))]);
+        }
+    }
+    default_answer(qtype, defaults)
+}
+
 /// The configured default answer for a query type
 pub fn default_answer(qtype: RecordType, defaults: &DnsDefaults) -> Answer {
     let records = match qtype {
@@ -94,7 +176,7 @@ pub async fn answer(message: &[u8], session: &mut Session) -> Option<Vec<u8>> {
             }
             answer
         }
-        None => default_answer(qtype, &defaults),
+        None => default_answer_for(&qname, qtype, &defaults),
     };
 
     let mut response = Message::new(request.metadata.id, MessageType::Response, request.metadata.op_code);
@@ -147,6 +229,27 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert_eq!(parse_answer("NXDOMAIN").0, Answer::Code(ResponseCode::NXDomain));
         assert_eq!(parse_answer("").0, Answer::Records(vec![]));
+    }
+
+    #[test]
+    fn realistic_answers() {
+        let defaults = DnsDefaults { per_domain: true, nxdomain_random: true, ..DnsDefaults::default() };
+        let a = |name: &str| match default_answer_for(name, RecordType::A, &defaults) {
+            Answer::Records(r) => match r.first() { Some(RData::A(a)) => Some(a.0), _ => None },
+            Answer::Code(_) => None,
+        };
+        let c2 = a("c2.evil.example").unwrap();
+        assert_eq!(a("C2.Evil.Example.").unwrap(), c2); // Stable, case-insensitive
+        assert_ne!(a("other.example").unwrap(), c2);
+        assert!((u32::from(c2) & 0xfffe_0000) == u32::from(Ipv4Addr::new(198, 18, 0, 0)));
+        let reverse = format!("{}.{}.{}.{}.in-addr.arpa", c2.octets()[3], c2.octets()[2], c2.octets()[1], c2.octets()[0]);
+        assert!(matches!(default_answer_for(&reverse, RecordType::PTR, &defaults), Answer::Records(r) if r.len() == 1));
+        assert_eq!(default_answer_for("xkqjzwvbtrnpl.com", RecordType::A, &defaults), Answer::Code(ResponseCode::NXDomain));
+        assert_eq!(a("dns.msftncsi.com").unwrap(), Ipv4Addr::new(131, 107, 255, 255));
+        for normal in ["update-service.example", "microsoftonline.com", "connectivitycheck.gstatic.com", "cdn.example"] {
+            assert!(!looks_random(normal), "{normal}");
+        }
+        assert!(looks_random("a8f3k2m9x7q1z.net"));
     }
 
     #[test]

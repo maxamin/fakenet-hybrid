@@ -1,0 +1,6 @@
+USER u
+PASS p
+LIST
+RETR 1
+TOP 1 2
+QUIT

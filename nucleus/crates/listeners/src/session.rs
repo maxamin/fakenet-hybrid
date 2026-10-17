@@ -37,6 +37,8 @@ pub struct Context {
     pub first_data_timeout: Duration,
     /// Set when a diverter rewrites addresses (Windows)
     pub original: Option<OriginalLookup>,
+    /// Response exploration (when enabled): answers what the daemon leaves to the default
+    pub explorer: Option<Arc<fakenet_explorer::Explorer>>,
 }
 
 pub struct Session {
@@ -127,7 +129,10 @@ impl Session {
     pub async fn decide(&mut self, payload: &[u8], meta: Value) -> Option<Action> {
         let event = self.builder.event(payload.to_vec(), meta, true);
         self.ctx.capture.log("event", json!(event));
-        match self.ctx.link.decide(&event).await {
+        if let Some(explorer) = &self.ctx.explorer {
+            explorer.observe(&event);
+        }
+        let decided = match self.ctx.link.decide(&event).await {
             Decision::Action(action) => {
                 self.ctx.capture.log("decision", json!({
                     "session_id": event.session_id, "request_id": event.request_id, "route": action.route,
@@ -145,7 +150,45 @@ impl Session {
                 }));
                 None
             }
+        };
+        self.jitter().await;
+        // The analyst's rules win; the explorer may answer what they left to the default
+        if decided.as_ref().is_some_and(|a| a.response.is_some()) {
+            return decided;
         }
+        let proposal = self.ctx.explorer.as_ref().and_then(|explorer| explorer.propose(&event));
+        match proposal {
+            Some(proposal) => {
+                self.ctx.capture.log("explored", json!({
+                    "session_id": event.session_id, "request_id": event.request_id, "template": proposal.template,
+                    "tokens": proposal.tokens, "close": proposal.close, "response_bytes": proposal.response.len(),
+                }));
+                Some(Action {
+                    version: fakenet_schema::VERSION,
+                    kind: fakenet_schema::ActionKind::Action,
+                    request_id: event.request_id.clone(),
+                    session_id: event.session_id.clone(),
+                    response: Some(proposal.response),
+                    close: proposal.close || decided.as_ref().is_some_and(|a| a.close),
+                    delay_ms: None,
+                    route: Some(format!("explorer:{}", proposal.template)),
+                    auth: None,
+                })
+            }
+            None => decided,
+        }
+    }
+
+    /// The configured random delay (defaults.latency_ms) before answering
+    async fn jitter(&self) {
+        let [min, max] = self.ctx.defaults.latency_ms;
+        if max == 0 {
+            return;
+        }
+        let spread = max.saturating_sub(min) + 1;
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+        let delay = min + u64::from(nanos) % spread;
+        tokio::time::sleep(Duration::from_millis(delay)).await;
     }
 
     /// One protocol step: asks the daemon, and returns its response or else `default`, plus
@@ -163,6 +206,9 @@ impl Session {
     /// Tells the daemon about something that needs no answer (e.g. the session ending)
     pub fn notify(&mut self, payload: &[u8], meta: Value) {
         let event = self.builder.event(payload.to_vec(), meta, false);
+        if let Some(explorer) = &self.ctx.explorer {
+            explorer.observe(&event);
+        }
         self.ctx.link.notify(&event);
     }
 }

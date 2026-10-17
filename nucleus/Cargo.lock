@@ -461,6 +461,7 @@ dependencies = [
  "clap",
  "fakenet-capture",
  "fakenet-diverter",
+ "fakenet-explorer",
  "fakenet-link",
  "fakenet-listeners",
  "fakenet-schema",
@@ -493,6 +494,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "fakenet-explorer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "fakenet-schema",
+ "ring",
+ "serde",
+ "serde_json",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "fakenet-link"
 version = "0.1.0"
 dependencies = [
@@ -513,6 +528,7 @@ dependencies = [
  "anyhow",
  "bytes",
  "fakenet-capture",
+ "fakenet-explorer",
  "fakenet-link",
  "fakenet-schema",
  "fakenet-sniffer",
@@ -536,6 +552,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-tungstenite",
  "tracing",
+ "x509-parser",
 ]
 
 [[package]]

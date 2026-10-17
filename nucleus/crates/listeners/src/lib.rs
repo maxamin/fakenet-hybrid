@@ -6,6 +6,8 @@ pub mod custom;
 pub mod dispatch;
 pub mod dns;
 pub mod ftp;
+#[cfg(feature = "fuzzing")]
+pub mod fuzzing;
 pub mod http;
 pub mod http3;
 pub mod imap;

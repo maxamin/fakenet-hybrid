@@ -39,6 +39,10 @@ impl Nucleus {
     }
 
     pub async fn start_with(name: &str, link: LinkConfig, listeners: &[ListenerConfig], defaults: Defaults) -> Nucleus {
+        Nucleus::start_full(name, link, listeners, defaults, None).await
+    }
+
+    pub async fn start_full(name: &str, link: LinkConfig, listeners: &[ListenerConfig], defaults: Defaults, explorer: Option<Arc<fakenet_explorer::Explorer>>) -> Nucleus {
         let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("listeners-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         let ca = Arc::new(TlsAuthority::generate().unwrap());
@@ -50,6 +54,7 @@ impl Nucleus {
             timeout: Duration::from_secs(5),
             first_data_timeout: Duration::from_millis(300),
             original: None,
+            explorer,
         });
         let server = Server::start(ctx, "127.0.0.1".parse().unwrap(), listeners).await.unwrap();
         Nucleus { server, dir, ca }

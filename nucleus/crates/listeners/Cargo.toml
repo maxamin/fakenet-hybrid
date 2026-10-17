@@ -10,6 +10,7 @@ fakenet-schema.workspace = true
 fakenet-sniffer.workspace = true
 fakenet-link.workspace = true
 fakenet-capture.workspace = true
+fakenet-explorer.workspace = true
 tokio.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
@@ -31,7 +32,13 @@ time.workspace = true
 libc.workspace = true
 md-5.workspace = true
 
+[features]
+# The `fuzzing` module: drives protocol handlers with arbitrary client bytes (cargo fuzz)
+fuzzing = []
+
 [dev-dependencies]
+x509-parser = "=0.18.1"
+fakenet-explorer.workspace = true
 hyper-util.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true

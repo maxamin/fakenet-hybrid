@@ -1,0 +1,6 @@
+NICK bot
+USER b 0 * :b
+JOIN #c key
+PRIVMSG #c :hi
+PING :x
+QUIT :bye

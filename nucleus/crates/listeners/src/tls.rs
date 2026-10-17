@@ -70,9 +70,17 @@ impl TlsAuthority {
         params.use_authority_key_identifier_extension = true;
         params.key_usages = vec![KeyUsagePurpose::DigitalSignature, KeyUsagePurpose::KeyEncipherment];
         params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        // Like a real site's certificate: issued weeks or months ago (a certificate minted
+        // a minute ago is a sandbox tell), a common lifetime, a random serial
+        let random = random_bytes::<16>();
+        let issued_days_ago = 30 + i64::from(u16::from_le_bytes([random[0], random[1]]) % 170);
+        let lifetime_days = [90, 365, 397][usize::from(random[2]) % 3];
         let now = OffsetDateTime::now_utc();
-        params.not_before = now - Duration::days(1);
-        params.not_after = now + Duration::days(397);
+        params.not_before = now - Duration::days(issued_days_ago) - Duration::seconds(i64::from(random[3]) * 337);
+        params.not_after = params.not_before + Duration::days(lifetime_days).max(Duration::days(issued_days_ago + 30));
+        let mut serial = random.to_vec();
+        serial[0] &= 0x7f; // A positive integer
+        params.serial_number = Some(rcgen::SerialNumber::from_slice(&serial));
         let key = KeyPair::generate()?;
         let cert = params.signed_by(&key, &self.issuer)?;
         let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
@@ -103,6 +111,19 @@ impl TlsAuthority {
         config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
         Arc::new(config)
     }
+}
+
+fn random_bytes<const N: usize>() -> [u8; N] {
+    use rustls::crypto::ring::default_provider;
+    let mut out = [0u8; N];
+    if default_provider().secure_random.fill(&mut out).is_err() {
+        // Not security-relevant (serials & dates): fall back to the clock
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        for (i, byte) in out.iter_mut().enumerate() {
+            *byte = (nanos >> ((i % 16) * 8)) as u8;
+        }
+    }
+    out
 }
 
 #[derive(Debug)]
@@ -136,5 +157,18 @@ mod tests {
         assert_eq!(a.cert.len(), 2);
         assert!(ca.certificate_for("10.0.0.1").is_ok());
         assert!(ca.ca_pem().starts_with("-----BEGIN CERTIFICATE-----"));
+    }
+
+    #[test]
+    fn leaf_certificates_look_long_established() {
+        let ca = TlsAuthority::generate().unwrap();
+        let der = ca.certificate_for("example.com").unwrap().cert[0].clone();
+        let (_, cert) = x509_parser::parse_x509_certificate(der.as_ref()).unwrap();
+        let validity = cert.validity();
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        let age_days = (now - validity.not_before.timestamp()) / 86400;
+        assert!((30..=200).contains(&age_days), "issued {age_days} days ago");
+        assert!(validity.not_after.timestamp() > now + 86400 * 20);
+        assert!(cert.raw_serial().len() >= 15);
     }
 }

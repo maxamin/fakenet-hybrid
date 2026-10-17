@@ -70,6 +70,9 @@ pub enum AutoKeyword {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Defaults {
+    /// Random delay before each answer, [min, max] milliseconds ([0, 0]: none). Instant
+    /// answers are a sandbox tell.
+    pub latency_ms: [u64; 2],
     pub http: HttpDefaults,
     pub dns: DnsDefaults,
     pub raw: RawDefaults,
@@ -85,6 +88,7 @@ pub struct Defaults {
 impl Default for Defaults {
     fn default() -> Self {
         Defaults {
+            latency_ms: [0, 0],
             http: HttpDefaults::default(),
             dns: DnsDefaults::default(),
             raw: RawDefaults::default(),
@@ -108,18 +112,29 @@ pub struct HttpDefaults {
     pub max_body_bytes: usize,
     /// Save request bodies (POST/PUT...) under files/
     pub save_bodies: bool,
+    /// Answer OS & browser connectivity checks (NCSI, generate_204, captive portals) exactly
+    /// as the real services do
+    pub connectivity_checks: bool,
 }
 
 impl Default for HttpDefaults {
     fn default() -> Self {
-        HttpDefaults { webroot: None, server_header: "Microsoft-IIS/10.0".into(), max_body_bytes: 16 << 20, save_bodies: true }
+        HttpDefaults { webroot: None, server_header: "Microsoft-IIS/10.0".into(), max_body_bytes: 16 << 20, save_bodies: true, connectivity_checks: true }
     }
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct DnsDefaults {
+    /// The address for every name (unless per_domain)
     pub a: Ipv4Addr,
+    /// Give each name its own stable address from `pool` (with matching PTR answers)
+    pub per_domain: bool,
+    /// IPv4 CIDR for per-domain addresses (198.18.0.0/15: reserved for benchmarking)
+    pub pool: String,
+    /// NXDOMAIN for random-looking (DGA-style) names: some samples check that random names
+    /// don't resolve to detect sandboxes
+    pub nxdomain_random: bool,
     pub aaaa: Option<Ipv6Addr>,
     pub mx: String,
     pub txt: String,
@@ -128,7 +143,16 @@ pub struct DnsDefaults {
 
 impl Default for DnsDefaults {
     fn default() -> Self {
-        DnsDefaults { a: Ipv4Addr::new(192, 0, 2, 123), aaaa: None, mx: "mail.fakenet.local".into(), txt: "FAKENET".into(), ttl: 60 }
+        DnsDefaults {
+            a: Ipv4Addr::new(192, 0, 2, 123),
+            per_domain: false,
+            pool: "198.18.0.0/15".into(),
+            nxdomain_random: false,
+            aaaa: None,
+            mx: "mail.fakenet.local".into(),
+            txt: "FAKENET".into(),
+            ttl: 60,
+        }
     }
 }
 

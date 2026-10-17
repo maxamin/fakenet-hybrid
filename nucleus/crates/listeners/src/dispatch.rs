@@ -48,7 +48,7 @@ pub(crate) fn serve_tunnel(parent: &Session, stream: BoxStream, target: String, 
 }
 
 /// Unwraps TLS and/or sniffs as configured, then runs the protocol's handler
-async fn serve(mut session: Session, mut stream: BoxStream, protocol: ListenerProtocol, tls: bool) -> anyhow::Result<()> {
+pub(crate) async fn serve(mut session: Session, mut stream: BoxStream, protocol: ListenerProtocol, tls: bool) -> anyhow::Result<()> {
     let ctx = session.ctx.clone();
     let dst = session.builder.dst;
     match protocol {
