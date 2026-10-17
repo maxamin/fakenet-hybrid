@@ -153,11 +153,11 @@ impl TlsAuthority {
     }
 }
 
-fn random_bytes<const N: usize>() -> [u8; N] {
+pub(crate) fn random_bytes<const N: usize>() -> [u8; N] {
     use rustls::crypto::ring::default_provider;
     let mut out = [0u8; N];
     if default_provider().secure_random.fill(&mut out).is_err() {
-        // Not security-relevant (serials & dates): fall back to the clock
+        // Not security-relevant (serials, dates, NTLM challenges): fall back to the clock
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         for (i, byte) in out.iter_mut().enumerate() {
             *byte = (nanos >> ((i % 16) * 8)) as u8;

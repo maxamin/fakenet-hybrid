@@ -31,6 +31,9 @@ tracing.workspace = true
 time.workspace = true
 libc.workspace = true
 md-5.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+base64.workspace = true
 
 [features]
 # The `fuzzing` module: drives protocol handlers with arbitrary client bytes (cargo fuzz)
@@ -40,5 +43,3 @@ fuzzing = []
 x509-parser = "=0.18.1"
 fakenet-explorer.workspace = true
 hyper-util.workspace = true
-tokio-tungstenite.workspace = true
-futures-util.workspace = true

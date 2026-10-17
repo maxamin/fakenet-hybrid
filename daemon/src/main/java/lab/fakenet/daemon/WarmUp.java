@@ -37,7 +37,7 @@ import org.slf4j.LoggerFactory;
  */
 public class WarmUp implements Processor {
     private static final Logger LOG = LoggerFactory.getLogger(WarmUp.class);
-    private static final List<String> PROTOCOLS = List.of("http", "dns", "raw", "smtp", "pop3", "ftp", "tftp", "irc", "imap", "ssh", "telnet", "redis", "ntp");
+    private static final List<String> PROTOCOLS = List.of("http", "dns", "raw", "smtp", "pop3", "ftp", "tftp", "irc", "imap", "ssh", "telnet", "redis", "ntp", "smb", "ldap", "rdp", "vnc", "mqtt", "coap", "websocket");
 
     @Override
     public void process(Exchange trigger) {

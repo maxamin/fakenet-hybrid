@@ -78,7 +78,14 @@
             "time",
             "qotd",
             "finger",
-            "whois"
+            "whois",
+            "mqtt",
+            "coap",
+            "vnc",
+            "rdp",
+            "ldap",
+            "smb",
+            "websocket"
           ],
           "description": "The protocol detected by the sniffer"
         },

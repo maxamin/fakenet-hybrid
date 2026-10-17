@@ -14,6 +14,8 @@ use hyper_util::rt::TokioIo;
 use serde_json::json;
 use tokio::sync::Mutex;
 
+use fakenet_schema::Protocol;
+
 use crate::custom::{replace_date, HttpResponse};
 use crate::session::Session;
 use crate::stream::BoxStream;
@@ -67,6 +69,9 @@ async fn respond(request: Request<Incoming>, session: &Mutex<Session>) -> Respon
     if request.method() == hyper::Method::CONNECT {
         return connect(request, &mut session).await;
     }
+    if crate::websocket::is_upgrade(&request) {
+        return crate::websocket::accept(request, &mut session).await;
+    }
     let defaults = session.ctx.defaults.http.clone();
     let (parts, body) = request.into_parts();
     let mut held = session.ctx.limits.hold();
@@ -93,10 +98,54 @@ async fn read_body(mut body: Incoming, max: usize, held: &mut crate::limits::Hel
     Ok(Bytes::from(collected))
 }
 
+/// A DNS-over-HTTPS query (RFC 8484): POST with an application/dns-message body, or GET
+/// with the message base64url-encoded in `dns`
+fn doh_query(parts: &hyper::http::request::Parts, body: &Bytes) -> Option<Vec<u8>> {
+    if parts.uri.path() != "/dns-query" {
+        return None;
+    }
+    let content_type = parts.headers.get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
+    if parts.method == hyper::Method::POST && content_type.eq_ignore_ascii_case("application/dns-message") {
+        return Some(body.to_vec());
+    }
+    let encoded = parts.uri.query()?.split('&').find_map(|pair| pair.strip_prefix("dns="))?;
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded.trim_end_matches('=')).ok()
+}
+
+/// Answers a DoH query with the DNS handler (logged and decided as DNS)
+async fn doh(session: &mut Session, parts: &hyper::http::request::Parts, query: &[u8]) -> Response<Full<Bytes>> {
+    let server = session.ctx.defaults.http.server_header.clone();
+    let host = parts.headers.get("host").and_then(|h| h.to_str().ok()).unwrap_or_default().to_string();
+    session.log("doh", json!({ "method": parts.method.as_str(), "host": host }));
+    session.client_data(query);
+    let http = session.builder.protocol;
+    session.builder.protocol = Protocol::Dns;
+    let reply = crate::dns::answer(query, session).await;
+    session.builder.protocol = http;
+    match reply {
+        Some(reply) => {
+            session.server_data(&reply);
+            let mut response = Response::new(Full::new(Bytes::from(reply)));
+            let headers = response.headers_mut();
+            headers.insert("content-type", hyper::header::HeaderValue::from_static("application/dns-message"));
+            headers.insert("cache-control", hyper::header::HeaderValue::from_static("max-age=60"));
+            if let Ok(value) = hyper::header::HeaderValue::from_str(&server) {
+                headers.insert("server", value);
+            }
+            response
+        }
+        None => build(StatusCode::BAD_REQUEST, &[], Bytes::new(), &server, false),
+    }
+}
+
 /// One HTTP request (any version: HTTP/1.1, HTTP/2, HTTP/3), read in full: the event, the
 /// daemon's decision or the default, and the capture. Returns the response to send.
 pub(crate) async fn answer(session: &mut Session, parts: hyper::http::request::Parts, body: Bytes) -> Response<Full<Bytes>> {
     let defaults = session.ctx.defaults.http.clone();
+    if let Some(query) = doh_query(&parts, &body) {
+        return doh(session, &parts, &query).await;
+    }
     // The request as it was on the wire, for the event & the pcap
     let mut raw = format!("{} {} {:?}\r\n", parts.method, parts.uri, parts.version).into_bytes();
     for (name, value) in &parts.headers {
@@ -394,9 +443,13 @@ mod tests {
 
 /// The upgraded connection, once hyper has sent the 200 (it's only available after the
 /// response): reads/writes wait for it
-struct PendingUpgrade(Option<hyper::upgrade::OnUpgrade>, Option<TokioIo<hyper::upgrade::Upgraded>>);
+pub(crate) struct PendingUpgrade(Option<hyper::upgrade::OnUpgrade>, Option<TokioIo<hyper::upgrade::Upgraded>>);
 
 impl PendingUpgrade {
+    pub(crate) fn new(upgrade: hyper::upgrade::OnUpgrade) -> PendingUpgrade {
+        PendingUpgrade(Some(upgrade), None)
+    }
+
     fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<&mut TokioIo<hyper::upgrade::Upgraded>>> {
         use std::future::Future;
         if self.1.is_none() {

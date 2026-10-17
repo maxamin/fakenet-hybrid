@@ -91,6 +91,13 @@ listener Syslog syslog udp 41514
 listener Telnet telnet tcp 41023
 listener Daytime daytime tcp 41013
 listener Finger finger tcp 41079
+listener SMB smb tcp 41445
+listener LDAP ldap tcp 41389
+listener RDP rdp tcp 43389
+listener VNC vnc tcp 45900
+listener MQTT mqtt tcp 41883
+listener CoAP coap udp 45683
+listener DoT dns tcp 41853 true
 } > "$WORK/fakenet.toml"
 
 "$BINARY" -c "$WORK/fakenet.toml" > "$WORK/server.log" 2>&1 &
@@ -255,6 +262,47 @@ if need nc "Telnet, small services & proxy detection"; then
     check "Finger: a user" sh -c "printf 'root\r\n' | nc -q 3 127.0.0.1 41079 | grep -q 'Login: root'"
     check "Proxy port: an SMTP client is detected from EHLO" \
         sh -c "printf 'EHLO x\r\nQUIT\r\n' | nc -q 3 127.0.0.1 48926 | grep -q '^250'"
+fi
+
+# --- Windows & IoT protocols ---
+records() { grep "\"kind\":\"$1\"" "$WORK/capture/events.jsonl"; }
+# A captured NetNTLMv2 hash for a user must crack to the expected secret (when john is here)
+cracks() { # user secret
+    records credentials | grep "\"username\":\"$1\"" | grep -o '"hash":"[^"]*"' | cut -d'"' -f4 > "$WORK/$1.hash"
+    [ -s "$WORK/$1.hash" ] || return 1
+    command -v john >/dev/null || return 0
+    printf '%s\nnot-it\n' "$2" > "$WORK/$1.words"
+    john --format=netntlmv2 --wordlist="$WORK/$1.words" --pot="$WORK/$1.pot" "$WORK/$1.hash" >/dev/null 2>&1
+    john --show --format=netntlmv2 --pot="$WORK/$1.pot" "$WORK/$1.hash" | grep -q ":$2:"
+}
+SMB_SECRET='S3cret-smb'
+if need smbclient "SMB"; then
+    smbclient -L 127.0.0.1 -p 41445 -U "CORP\\smbuser%$SMB_SECRET" >/dev/null 2>&1
+    sleep 0.3
+    check "SMB: smbclient's NTLMv2 logon is captured (and cracks)" cracks smbuser "$SMB_SECRET"
+    check "SMB: the dialects offered are logged" sh -c "grep '\"kind\":\"smb_negotiate\"' '$WORK/capture/events.jsonl' | grep -q '3.1.1'"
+fi
+LDAP_SECRET='Bind-pw-1'
+if need ldapsearch "LDAP"; then
+    check "LDAP: ldapsearch reads the root DSE" sh -c "ldapsearch -x -H ldap://127.0.0.1:41389 -s base -b '' defaultNamingContext | grep -q 'DC=fakenet,DC=local'"
+    ldapsearch -x -H ldap://127.0.0.1:41389 -D 'CN=svc,DC=corp' -w "$LDAP_SECRET" -b 'DC=corp' '(&(objectClass=user)(adminCount=1))' >/dev/null 2>&1
+    sleep 0.3
+    check "LDAP: a simple bind's password is captured" sh -c "grep -q '\"password\":\"$LDAP_SECRET\"' '$WORK/capture/events.jsonl'"
+    check "LDAP: the search filter is rendered" sh -c "grep -q '(&(objectClass=user)(adminCount=1))' '$WORK/capture/events.jsonl'"
+fi
+FREERDP="$(command -v xfreerdp3 || command -v xfreerdp || true)"
+RDP_SECRET='Rdp-pw-22'
+if [ -n "$FREERDP" ]; then
+    timeout 20 "$FREERDP" /v:127.0.0.1:43389 /u:rdpuser /d:CORP /p:"$RDP_SECRET" /cert:ignore +auth-only >/dev/null 2>&1
+    sleep 0.3
+    check "RDP: FreeRDP's cookie and NLA NTLM hash are captured (and cracks)" cracks rdpuser "$RDP_SECRET"
+else
+    SKIP=$((SKIP + 1)); echo "SKIP  RDP (xfreerdp not installed)"
+fi
+if need python3 "MQTT, CoAP & WebSocket"; then
+    check "MQTT: a CONNECT's credentials are captured" sh -c "python3 scripts/interop-iot.py mqtt 41883 | grep -q OK && sleep 0.3 && grep -q '\"mechanism\":\"MQTT\"' '$WORK/capture/events.jsonl'"
+    check "CoAP: a GET of /.well-known/core is answered" sh -c "python3 scripts/interop-iot.py coap 45683 | grep -q OK && grep -q '/.well-known/core' '$WORK/capture/events.jsonl'"
+    check "WebSocket: an HTTP upgrade carries a message to the capture" sh -c "python3 scripts/interop-iot.py ws 41080 | grep -q OK && sleep 0.3 && grep -q '\"kind\":\"websocket_message\"' '$WORK/capture/events.jsonl'"
 fi
 
 # --- Report & import ---

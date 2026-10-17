@@ -15,7 +15,7 @@ use std::pin::Pin;
 use crate::config::{AutoKeyword, ListenerConfig, ListenerProtocol};
 use crate::session::{Context, Session};
 use crate::stream::{BoxStream, PrefixedStream};
-use crate::{dns, ftp, http, imap, irc, ntp, pop3, raw, redis, simple, smtp, socks, ssh, syslog, telnet, tftp};
+use crate::{coap, dns, ftp, http, imap, irc, ldap, mqtt, ntp, pop3, raw, rdp, redis, simple, smb, smtp, socks, ssh, syslog, telnet, tftp, vnc};
 
 const PEEK: usize = 4096;
 
@@ -92,8 +92,14 @@ pub(crate) async fn serve(mut session: Session, mut stream: BoxStream, protocol:
         Protocol::Syslog => syslog::handle_tcp(stream, session).await,
         Protocol::Echo | Protocol::Discard | Protocol::Daytime | Protocol::Chargen | Protocol::Time | Protocol::Qotd | Protocol::Finger
         | Protocol::Whois => simple::handle_tcp(stream, session).await,
-        // TFTP and NTP are UDP-only; anything else gets the catch-all
-        Protocol::Raw | Protocol::Tftp | Protocol::Ntp => raw::handle_tcp(stream, session).await,
+        // TFTP, NTP and CoAP are UDP-only; WebSocket is reached through HTTP; anything else
+        // gets the catch-all
+        Protocol::Smb => smb::handle(stream, session).await,
+        Protocol::Ldap => ldap::handle(stream, session).await,
+        Protocol::Rdp => rdp::handle(stream, session).await,
+        Protocol::Vnc => vnc::handle(stream, session).await,
+        Protocol::Mqtt => mqtt::handle(stream, session).await,
+        Protocol::Raw | Protocol::Tftp | Protocol::Ntp | Protocol::Coap | Protocol::Websocket => raw::handle_tcp(stream, session).await,
     }
 }
 
@@ -183,6 +189,7 @@ pub async fn handle_udp(session: &mut Session, data: &[u8], peer: SocketAddr, so
         Protocol::Tftp => tftp::handle(data, session, peer).await,
         Protocol::Ntp => ntp::handle(data, session).await,
         Protocol::Syslog => syslog::handle_udp(data, session),
+        Protocol::Coap => coap::handle(data, session).await,
         Protocol::Echo | Protocol::Discard | Protocol::Daytime | Protocol::Chargen | Protocol::Time | Protocol::Qotd => simple::handle_udp(data, session).await,
         _ => raw::handle_udp(data, session, peer, socket).await,
     }

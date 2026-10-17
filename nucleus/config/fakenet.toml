@@ -205,6 +205,46 @@ name = "SSH"
 protocol = "ssh"
 port = 22
 
+# Credential capture (NTLM / VNC): logs what a sample offers, then fails the logon
+[[listener]]
+name = "SMB"
+protocol = "smb"
+port = 445
+
+[[listener]]
+name = "LDAP"
+protocol = "ldap"
+port = 389
+
+[[listener]]
+name = "RDP"
+protocol = "rdp"
+port = 3389
+
+[[listener]]
+name = "VNC"
+protocol = "vnc"
+port = 5900
+
+# IoT & web C2 (each message reaches the daemon; a rule or the explorer can task the bot)
+[[listener]]
+name = "MQTT"
+protocol = "mqtt"
+port = 1883
+
+[[listener]]
+name = "CoAP"
+protocol = "coap"
+transport = "udp"
+port = 5683
+
+# DNS over TLS; DNS over HTTPS is served by the HTTPS listeners at /dns-query
+[[listener]]
+name = "DoT"
+protocol = "dns"
+port = 853
+tls = true
+
 [[listener]]
 name = "Auto"                    # the diverter sends every other TCP port here
 protocol = "auto"

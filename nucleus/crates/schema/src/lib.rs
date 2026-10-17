@@ -37,6 +37,13 @@ pub enum Protocol {
     Qotd,
     Finger,
     Whois,
+    Mqtt,
+    Coap,
+    Vnc,
+    Rdp,
+    Ldap,
+    Smb,
+    Websocket,
 }
 
 impl Protocol {
@@ -65,6 +72,13 @@ impl Protocol {
             Protocol::Qotd => "qotd",
             Protocol::Finger => "finger",
             Protocol::Whois => "whois",
+            Protocol::Mqtt => "mqtt",
+            Protocol::Coap => "coap",
+            Protocol::Vnc => "vnc",
+            Protocol::Rdp => "rdp",
+            Protocol::Ldap => "ldap",
+            Protocol::Smb => "smb",
+            Protocol::Websocket => "websocket",
         }
     }
 }

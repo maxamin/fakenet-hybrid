@@ -15,6 +15,7 @@ use fakenet_schema::{Protocol, Transport};
 pub const DEFAULT_ORDER: &[Protocol] = &[
     Protocol::Http, Protocol::Dns, Protocol::Tftp, Protocol::Ntp, Protocol::Ssh, Protocol::Redis, Protocol::Telnet,
     Protocol::Socks, Protocol::Syslog, Protocol::Smtp, Protocol::Ftp, Protocol::Pop3, Protocol::Imap, Protocol::Irc,
+    Protocol::Mqtt, Protocol::Coap, Protocol::Rdp, Protocol::Ldap, Protocol::Smb, Protocol::Vnc,
     // Port-only services (nothing to recognize in their requests)
     Protocol::Echo, Protocol::Discard, Protocol::Daytime, Protocol::Chargen, Protocol::Time, Protocol::Qotd, Protocol::Finger,
     Protocol::Whois, Protocol::Raw,
@@ -22,11 +23,11 @@ pub const DEFAULT_ORDER: &[Protocol] = &[
 
 pub fn supports(protocol: Protocol, transport: Transport) -> bool {
     match transport {
-        Transport::Tcp => !matches!(protocol, Protocol::Tftp | Protocol::Ntp),
+        Transport::Tcp => !matches!(protocol, Protocol::Tftp | Protocol::Ntp | Protocol::Coap),
         Transport::Udp => matches!(
             protocol,
             Protocol::Dns | Protocol::Tftp | Protocol::Ntp | Protocol::Syslog | Protocol::Echo | Protocol::Discard
-                | Protocol::Daytime | Protocol::Chargen | Protocol::Time | Protocol::Qotd | Protocol::Raw
+                | Protocol::Daytime | Protocol::Chargen | Protocol::Time | Protocol::Qotd | Protocol::Coap | Protocol::Raw
         ),
     }
 }
@@ -34,7 +35,7 @@ pub fn supports(protocol: Protocol, transport: Transport) -> bool {
 pub fn default_ports(protocol: Protocol) -> &'static [u16] {
     match protocol {
         Protocol::Http => &[80, 443, 8000, 8080, 8443],
-        Protocol::Dns => &[53],
+        Protocol::Dns => &[53, 853],
         Protocol::Smtp => &[25, 465, 587],
         Protocol::Pop3 => &[110, 995],
         Protocol::Ftp => &[21],
@@ -55,7 +56,14 @@ pub fn default_ports(protocol: Protocol) -> &'static [u16] {
         Protocol::Qotd => &[17],
         Protocol::Finger => &[79],
         Protocol::Whois => &[43],
-        Protocol::Raw => &[],
+        Protocol::Mqtt => &[1883, 8883],
+        Protocol::Coap => &[5683, 5684],
+        Protocol::Vnc => &[5900, 5901, 5902, 5903, 5904, 5905, 5906],
+        Protocol::Rdp => &[3389],
+        Protocol::Ldap => &[389, 636, 3268, 3269],
+        Protocol::Smb => &[139, 445],
+        // Only reached by upgrading an HTTP connection
+        Protocol::Websocket | Protocol::Raw => &[],
     }
 }
 
@@ -64,7 +72,7 @@ pub fn server_speaks_first(protocol: Protocol) -> bool {
     matches!(
         protocol,
         Protocol::Smtp | Protocol::Pop3 | Protocol::Ftp | Protocol::Imap | Protocol::Ssh | Protocol::Telnet | Protocol::Daytime
-            | Protocol::Chargen | Protocol::Time | Protocol::Qotd
+            | Protocol::Chargen | Protocol::Time | Protocol::Qotd | Protocol::Vnc
     )
 }
 
@@ -188,6 +196,88 @@ pub fn is_tftp(data: &[u8]) -> bool {
     }
 }
 
+/// MQTT CONNECT: type 1, a remaining length, then the protocol name "MQTT" (3.1.1, 5) or
+/// "MQIsdp" (3.1)
+fn is_mqtt(data: &[u8]) -> bool {
+    if data.first() != Some(&0x10) {
+        return false;
+    }
+    // Remaining length: 1-4 bytes, 7 bits each
+    let Some(end) = data.iter().skip(1).take(4).position(|b| b & 0x80 == 0) else { return false };
+    let rest = &data[2 + end..];
+    rest.starts_with(b"\x00\x04MQTT") || rest.starts_with(b"\x00\x06MQIsdp")
+}
+
+/// A CoAP request (RFC 7252): version 1, a token of at most 8 bytes, a request code (or
+/// an empty ping), and well-formed options up to the payload marker
+fn is_coap(data: &[u8]) -> bool {
+    let [first, code, _, _, rest @ ..] = data else { return false };
+    let token = usize::from(first & 0x0f);
+    if first >> 6 != 1 || token > 8 || *code > 4 || rest.len() < token {
+        return false;
+    }
+    let mut options = &rest[token..];
+    while let Some((&byte, after)) = options.split_first() {
+        if byte == 0xff {
+            return !after.is_empty(); // A payload marker must be followed by a payload
+        }
+        let extended = |nibble: u8| match nibble {
+            13 => Some(1),
+            14 => Some(2),
+            15 => None,
+            _ => Some(0),
+        };
+        let (Some(delta_bytes), Some(length_bytes)) = (extended(byte >> 4), extended(byte & 0x0f)) else { return false };
+        if after.len() < delta_bytes + length_bytes {
+            return false;
+        }
+        let length = match (byte & 0x0f, &after[delta_bytes..]) {
+            (13, [l, ..]) => usize::from(*l) + 13,
+            (14, [h, l, ..]) => usize::from(u16::from_be_bytes([*h, *l])) + 269,
+            (n, _) => usize::from(n),
+        };
+        let skip = delta_bytes + length_bytes + length;
+        if after.len() < skip {
+            return false;
+        }
+        options = &after[skip..];
+    }
+    true
+}
+
+/// RDP: a TPKT header (version 3) carrying an X.224 Connection Request
+fn is_rdp(data: &[u8]) -> bool {
+    data.len() >= 7 && data[0] == 3 && data[1] == 0 && data[5] == 0xe0 && usize::from(u16::from_be_bytes([data[2], data[3]])) >= 11
+}
+
+/// LDAP: a BER SEQUENCE holding a message ID and a protocol operation (bind, search,
+/// extended such as StartTLS, unbind, add, modify, delete, compare, abandon)
+fn is_ldap(data: &[u8]) -> bool {
+    if data.first() != Some(&0x30) || data.len() < 7 {
+        return false;
+    }
+    let header = match data[1] {
+        length if length < 0x80 => 2,
+        0x81..=0x84 => 2 + usize::from(data[1] & 0x7f),
+        _ => return false,
+    };
+    let Some(&[0x02, id_length]) = data.get(header..header + 2) else { return false };
+    if !(1..=4).contains(&id_length) {
+        return false;
+    }
+    data.get(header + 2 + usize::from(id_length)).is_some_and(|op| matches!(op, 0x60 | 0x63 | 0x77 | 0x42 | 0x66 | 0x68 | 0x4a | 0x6c | 0x6e | 0x50))
+}
+
+/// SMB over NetBIOS session service: a session message carrying SMB1 or SMB2/3, or (port
+/// 139) a NetBIOS session request
+fn is_smb(data: &[u8]) -> bool {
+    match data {
+        [0x00, _, _, _, 0xff | 0xfe, b'S', b'M', b'B', ..] => true,
+        [0x81, 0x00, _, _, ..] => data.len() >= 72,
+        _ => false,
+    }
+}
+
 /// Whether the first bytes look like a TLS ClientHello record
 pub fn looks_like_tls(data: &[u8]) -> bool {
     data.len() >= 3 && data[0] == 0x16 && data[1] == 0x03 && data[2] <= 0x04
@@ -225,6 +315,13 @@ pub fn score(protocol: Protocol, data: &[u8], port: u16, transport: Transport) -
         Protocol::Ntp => 2 * u32::from(is_ntp(data)),
         Protocol::Socks => 2 * u32::from(is_socks(data)),
         Protocol::Syslog => 2 * u32::from(is_syslog(data)),
+        Protocol::Mqtt => 2 * u32::from(is_mqtt(data)),
+        Protocol::Coap => 2 * u32::from(is_coap(data)),
+        Protocol::Vnc => 2 * u32::from(data.starts_with(b"RFB 00")),
+        Protocol::Rdp => 2 * u32::from(is_rdp(data)),
+        Protocol::Ldap => 2 * u32::from(is_ldap(data)),
+        Protocol::Smb => 2 * u32::from(is_smb(data)),
+        Protocol::Websocket => 0,
         // Recognized by port alone (a port match scores 1, like raw: the earlier wins)
         Protocol::Echo | Protocol::Discard | Protocol::Daytime | Protocol::Chargen | Protocol::Time | Protocol::Qotd
         | Protocol::Finger | Protocol::Whois => 0,

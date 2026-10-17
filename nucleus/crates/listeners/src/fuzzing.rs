@@ -21,9 +21,9 @@ pub const TCP: &[Option<Protocol>] = &[
     Some(Protocol::Ftp), Some(Protocol::Irc), Some(Protocol::Imap), Some(Protocol::Ssh), Some(Protocol::Telnet),
     Some(Protocol::Redis), Some(Protocol::Socks), Some(Protocol::Syslog), Some(Protocol::Echo), Some(Protocol::Discard),
     Some(Protocol::Daytime), Some(Protocol::Chargen), Some(Protocol::Time), Some(Protocol::Qotd), Some(Protocol::Finger),
-    Some(Protocol::Whois),
+    Some(Protocol::Whois), Some(Protocol::Smb), Some(Protocol::Ldap), Some(Protocol::Rdp), Some(Protocol::Vnc), Some(Protocol::Mqtt),
 ];
-pub const UDP: &[Protocol] = &[Protocol::Dns, Protocol::Tftp, Protocol::Ntp, Protocol::Syslog, Protocol::Raw, Protocol::Echo, Protocol::Daytime];
+pub const UDP: &[Protocol] = &[Protocol::Dns, Protocol::Tftp, Protocol::Ntp, Protocol::Syslog, Protocol::Coap, Protocol::Raw, Protocol::Echo, Protocol::Daytime];
 
 struct Harness {
     runtime: tokio::runtime::Runtime,

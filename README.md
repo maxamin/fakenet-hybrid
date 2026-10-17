@@ -23,7 +23,9 @@ Design, trade-offs and verification status: [docs/ARCHITECTURE.md](docs/ARCHITEC
 | Name & time | DNS (UDP & TCP), NTP (with a time offset) |
 | Mail | SMTP (STARTTLS, AUTH, messages saved as `.eml`), POP3 (STLS), IMAP (STARTTLS) |
 | Files | FTP (passive & active, uploads saved), TFTP (both directions) |
-| C2 & honeypots | IRC, SSH (client fingerprinting with HASSH), Telnet (Mirai-style login & busybox probes), Redis (flags `CONFIG SET`-style attacks), syslog |
+| C2 & honeypots | IRC, SSH (client fingerprinting with HASSH), Telnet (Mirai-style login & busybox probes), Redis (flags `CONFIG SET`-style attacks), syslog, MQTT & CoAP (IoT C2), WebSocket (over HTTP) |
+| Windows & remote | SMB and LDAP (NTLM capture as crackable NetNTLMv1/v2), RDP (cookie, NLA/CredSSP NTLM, client core data), VNC (DES challenge → john's `$vnc$`) |
+| Encrypted name | DNS over TLS (DoT) and DNS over HTTPS (DoH, `/dns-query`) |
 | Small services | echo, discard, daytime, chargen, time, qotd, finger, whois |
 | Everything else | raw TCP/UDP (echo or a static reply); "auto" listeners detect any of the above on any port |
 

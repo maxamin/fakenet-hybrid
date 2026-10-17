@@ -178,11 +178,29 @@ no Camel type converter to bytes (`ActionOut` handles any `CharSequence` itself)
 - Python Custom Response providers (HttpDynamic/TcpDynamic/UdpDynamic) are Unix-only;
   static custom responses work everywhere.
 
-## Additional protocols worth adding later
+## Credential-capture protocols
 
-| Protocol | Owner | Why |
-|---|---|---|
-| SMB (negotiate + session setup, NTLM capture) | nucleus | Binary, stateful, latency-sensitive; daemon only gets events |
-| LDAP (bind + search) | nucleus parses, daemon answers | Directory replies vary per scenario: good fit for routes |
-| MQTT / CoAP | daemon-scripted via raw events | IoT C2; topics/payloads are scenario-specific |
-| RDP (connection request, NLA) | nucleus | Capture-only; credential capture needs CredSSP |
+SMB, LDAP, RDP and VNC exist to collect what a sample offers, not to complete a session:
+each negotiates far enough to log the credential, then fails the logon (a fake server can't
+derive the session keys a real one would, and a failed logon makes worms try their next
+credential, which is captured too).
+
+- **SMB** (`smb.rs`): NetBIOS framing, the SMB1 multi-protocol negotiate (answered by moving
+  the client to SMB2), SMB2 NEGOTIATE and SESSION_SETUP with NTLM inside SPNEGO.
+- **LDAP** (`ldap.rs`): simple binds (DN + password in the clear), NTLM binds (Microsoft's
+  Sicily and SASL GSS-SPNEGO), searches logged with their filter rendered as RFC 4515 text,
+  a plausible root DSE, and StartTLS.
+- **RDP** (`rdp.rs`): the X.224 `mstshash` cookie and requested security; for NLA clients,
+  TLS then CredSSP far enough to capture the NTLM response; otherwise the MCS client core
+  data (computer name, build, keyboard, screen).
+- **VNC** (`vnc.rs`): the RFB version and the DES challenge/response.
+
+NTLM (`ntlm.rs`) is shared by SMB, LDAP and RDP; captured responses become hashcat/john
+lines (NetNTLMv1 5500, NetNTLMv2 5600), VNC becomes john's `$vnc$`. `scripts/interop.sh`
+drives all four with real clients (smbclient, ldapsearch, FreeRDP) and cracks the captured
+hashes with john.
+
+**IoT and web C2:** MQTT (`mqtt.rs`, v3.1/3.1.1/5), CoAP (`coap.rs`, over UDP) and WebSocket
+(`websocket.rs`, after an HTTP upgrade) carry each message to the daemon as an event, so a
+rule — or the explorer — can task a bot over them. **Encrypted name resolution:** DoT (a TLS
+listener speaking DNS) and DoH (`/dns-query` in the HTTP handler) reuse the DNS handler.
