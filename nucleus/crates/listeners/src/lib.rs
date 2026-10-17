@@ -12,6 +12,7 @@ pub mod http;
 pub mod http3;
 pub mod imap;
 pub mod irc;
+pub mod limits;
 pub mod lines;
 pub mod original_dst;
 pub mod ntp;
@@ -32,6 +33,7 @@ pub mod tftp;
 pub mod tls;
 
 pub use config::{Defaults, ListenerConfig};
+pub use limits::{Limits, LimitsConfig};
 pub use server::Server;
 pub use session::{Context, Original, OriginalLookup, Session};
 pub use tls::TlsAuthority;

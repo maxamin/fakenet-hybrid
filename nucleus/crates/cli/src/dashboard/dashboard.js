@@ -99,7 +99,10 @@ async function summary() {
     const d = s.daemon || {};
     $("link").textContent = d.websocket_connected ? "daemon connected" : d.websocket_configured || d.http_configured ? "daemon unavailable: defaults" : "no daemon: defaults";
     $("link").className = d.websocket_connected ? "pill ok" : "pill bad";
-    $("counters").textContent = `decisions ${text(d.decisions)} · fallbacks ${text(d.fallbacks)} · reconnects ${text(d.reconnects)} · records ${state.after}`;
+    const l = s.limits || {};
+    const refused = (l.refused_max_sessions || 0) + (l.refused_rate || 0) + (l.refused_memory || 0);
+    $("counters").textContent = `decisions ${text(d.decisions)} · fallbacks ${text(d.fallbacks)} · reconnects ${text(d.reconnects)} · records ${state.after}`
+      + ` · sessions ${text(l.sessions_active ?? "?")}` + (refused ? ` · refused by limits ${refused} (sessions ${text(l.refused_max_sessions)}, rate ${text(l.refused_rate)}, memory ${text(l.refused_memory)})` : "");
     $("listeners").replaceChildren(...(s.listeners || []).map((l) => element("li", `${text(l.name)}: ${text(l.transport)} ${text(l.address)}`)));
     const e = s.explorer;
     if (e) {

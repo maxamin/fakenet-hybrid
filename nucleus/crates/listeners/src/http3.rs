@@ -29,8 +29,13 @@ pub async fn serve(ctx: Arc<Context>, listener: Arc<crate::server::Listener>, so
         tokio::select! {
             incoming = endpoint.accept() => {
                 let Some(incoming) = incoming else { return };
+                let Some(permit) = ctx.limits.admit(incoming.remote_address().ip(), &name) else {
+                    incoming.refuse();
+                    continue;
+                };
                 let (ctx, listener) = (ctx.clone(), listener.clone());
                 connections.spawn(async move {
+                    let _permit = permit;
                     if let Err(e) = connection(ctx, listener, incoming).await {
                         tracing::debug!("HTTP/3 connection: {e:#}");
                     }
@@ -101,10 +106,13 @@ where
     C: h3::quic::Connection<Bytes>,
 {
     let (request, mut stream) = resolver.resolve_request().await?;
-    let max = session.lock().await.ctx.defaults.http.max_body_bytes;
+    let (max, mut held) = {
+        let session = session.lock().await;
+        (session.ctx.defaults.http.max_body_bytes, session.ctx.limits.hold())
+    };
     let mut body = Vec::new();
     while let Some(mut chunk) = stream.recv_data().await? {
-        if body.len() + chunk.remaining() > max {
+        if body.len() + chunk.remaining() > max || held.grow(chunk.remaining()).is_err() {
             let response = hyper::Response::builder().status(413).body(())?;
             stream.send_response(response).await?;
             stream.finish().await?;

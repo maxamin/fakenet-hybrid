@@ -10,7 +10,7 @@ use std::time::Duration;
 use fakenet_capture::Capture;
 use fakenet_link::{Link, LinkConfig};
 use fakenet_listeners::config::{AutoKeyword, ListenerProtocol};
-use fakenet_listeners::{Context, Defaults, ListenerConfig, Server, TlsAuthority};
+use fakenet_listeners::{Context, Defaults, LimitsConfig, ListenerConfig, Server, TlsAuthority};
 use fakenet_schema::{Action, ActionKind, Event, Protocol, Transport, VERSION};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
@@ -39,10 +39,10 @@ impl Nucleus {
     }
 
     pub async fn start_with(name: &str, link: LinkConfig, listeners: &[ListenerConfig], defaults: Defaults) -> Nucleus {
-        Nucleus::start_full(name, link, listeners, defaults, None).await
+        Nucleus::start_full(name, link, listeners, defaults, None, LimitsConfig::default()).await
     }
 
-    pub async fn start_full(name: &str, link: LinkConfig, listeners: &[ListenerConfig], defaults: Defaults, explorer: Option<Arc<fakenet_explorer::Explorer>>) -> Nucleus {
+    pub async fn start_full(name: &str, link: LinkConfig, listeners: &[ListenerConfig], defaults: Defaults, explorer: Option<Arc<fakenet_explorer::Explorer>>, limits: LimitsConfig) -> Nucleus {
         let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("listeners-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         let ca = Arc::new(TlsAuthority::generate().unwrap());
@@ -55,6 +55,7 @@ impl Nucleus {
             first_data_timeout: Duration::from_millis(300),
             original: None,
             explorer,
+            limits: Arc::new(fakenet_listeners::Limits::new(&limits)),
         });
         let server = Server::start(ctx, "127.0.0.1".parse().unwrap(), listeners).await.unwrap();
         Nucleus { server, dir, ca }

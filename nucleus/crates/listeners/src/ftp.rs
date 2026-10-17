@@ -199,13 +199,14 @@ impl Ftp {
             return Ok(("425 Can't open data connection\r\n".into(), None));
         };
         let mut contents = Vec::new();
+        let mut held = session.ctx.limits.hold();
         let mut buffer = vec![0u8; 64 * 1024];
         loop {
             let read = match tokio::time::timeout(session.ctx.timeout, channel.read(&mut buffer)).await {
                 Err(_) | Ok(Ok(0)) => break,
                 Ok(result) => result?,
             };
-            if contents.len() + read > MAX_UPLOAD {
+            if contents.len() + read > MAX_UPLOAD || held.grow(read).is_err() {
                 session.log("upload_too_large", json!({ "name": name }));
                 return Ok(("552 Upload too large\r\n".into(), None));
             }

@@ -692,7 +692,7 @@ async fn explores_answers_the_daemon_leaves_to_the_default() {
     let explorer = std::sync::Arc::new(Explorer::new(config, templates, hints));
     let listeners = vec![listener("http", Some(Protocol::Http), Transport::Tcp, false), listener("dns", Some(Protocol::Dns), Transport::Udp, false)];
     // The daemon scripts /gate.php only: everything else is the explorer's
-    let nucleus = Nucleus::start_full("explorer", fake_daemon(Duration::ZERO, gate_rule).await, &listeners, Default::default(), Some(explorer.clone())).await;
+    let nucleus = Nucleus::start_full("explorer", fake_daemon(Duration::ZERO, gate_rule).await, &listeners, Default::default(), Some(explorer.clone()), Default::default()).await;
     wait_connected().await;
 
     let mut bodies = std::collections::BTreeSet::new();

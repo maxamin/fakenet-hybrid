@@ -7,7 +7,7 @@ use std::convert::Infallible;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use http_body_util::{BodyExt, Full, Limited};
+use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
@@ -69,14 +69,28 @@ async fn respond(request: Request<Incoming>, session: &Mutex<Session>) -> Respon
     }
     let defaults = session.ctx.defaults.http.clone();
     let (parts, body) = request.into_parts();
-    let body = match Limited::new(body, defaults.max_body_bytes).collect().await {
-        Ok(collected) => collected.to_bytes(),
+    let mut held = session.ctx.limits.hold();
+    let body = match read_body(body, defaults.max_body_bytes, &mut held).await {
+        Ok(body) => body,
         Err(e) => {
-            session.log("bad_request", json!({ "error": e.to_string() }));
+            session.log("bad_request", json!({ "error": format!("{e:#}") }));
             return build(StatusCode::PAYLOAD_TOO_LARGE, &[], Bytes::new(), &defaults.server_header, true);
         }
     };
     answer(&mut session, parts, body).await
+}
+
+/// The whole request body, within `max` bytes and the memory budget
+async fn read_body(mut body: Incoming, max: usize, held: &mut crate::limits::Held) -> anyhow::Result<Bytes> {
+    let mut collected = Vec::new();
+    while let Some(frame) = body.frame().await {
+        if let Ok(data) = frame?.into_data() {
+            anyhow::ensure!(collected.len() + data.len() <= max, "body larger than max_body_bytes");
+            held.grow(data.len())?;
+            collected.extend_from_slice(&data);
+        }
+    }
+    Ok(Bytes::from(collected))
 }
 
 /// One HTTP request (any version: HTTP/1.1, HTTP/2, HTTP/3), read in full: the event, the

@@ -167,6 +167,10 @@ Without the token, the nucleus's `/health` only says `{"status":"ok"}`.
   events.jsonl -o report.html` renders one at any time.
 - `ca.pem`: the interception CA.
 
+`[limits]` keeps a hostile sample from exhausting the nucleus: `max_sessions` concurrent
+sessions, an optional `per_source_per_second` rate, and a `memory_budget_mb` for payloads
+buffered at once. Refusals are counted in `/health` and on the dashboard.
+
 The event log and pcaps rotate by size (`max_events_mb`, `max_pcap_mb`, `keep_rotations`),
 and `files/` stops growing at `max_files_mb`. Past that budget new payloads are logged but
 not saved, so existing evidence is never deleted.

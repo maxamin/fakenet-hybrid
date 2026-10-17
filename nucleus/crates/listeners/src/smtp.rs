@@ -142,12 +142,14 @@ async fn auth(lines: &mut Lines, session: &Session, arg: &str) -> anyhow::Result
 /// Reads DATA until the lone "." line, undoing dot-stuffing (RFC 5321 4.5.2)
 async fn read_message(lines: &mut Lines, session: &Session) -> anyhow::Result<Vec<u8>> {
     let mut message = Vec::new();
+    let mut held = session.ctx.limits.hold();
     while let Some(line) = lines.read(session).await? {
         if line == "." {
             break;
         }
         let line = line.strip_prefix('.').unwrap_or(&line);
         anyhow::ensure!(message.len() + line.len() + 2 <= MAX_MESSAGE, "message too large");
+        held.grow(line.len() + 2)?;
         message.extend_from_slice(line.as_bytes());
         message.extend_from_slice(b"\r\n");
     }

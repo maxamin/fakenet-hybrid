@@ -47,6 +47,7 @@ fn harness() -> &'static Harness {
                 first_data_timeout: Duration::from_millis(20),
                 original: None,
                 explorer: None,
+                limits: Default::default(),
             });
             (ctx, tokio::net::UdpSocket::bind("127.0.0.1:0").await.expect("socket"))
         });

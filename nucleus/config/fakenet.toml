@@ -13,6 +13,12 @@ keep_rotations = 4               # rotated files kept
 max_files_mb = 2048              # stop saving payloads to files/ past this total
 wire_capture = false             # also record every real packet to wire.pcap (root/Administrator)
 
+[limits]                         # so a hostile sample can't exhaust the nucleus (0: unlimited)
+max_sessions = 4096              # concurrent TCP connections + UDP clients; new ones past it are dropped
+per_source_per_second = 0        # new sessions per second per source address (off: scanners open many)
+per_source_burst = 200
+memory_budget_mb = 1024          # payloads buffered at once (bodies, uploads, emails); past it they're refused
+
 [daemon]                         # the Camel daemon (loopback only; enforced). "" disables a channel
 websocket_url = "ws://127.0.0.1:8090/link"
 http_url = "http://127.0.0.1:8091/decide"

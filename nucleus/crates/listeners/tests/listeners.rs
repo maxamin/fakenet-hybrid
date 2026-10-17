@@ -211,3 +211,65 @@ async fn raw_udp_echoes_by_default() {
     let length = tokio::time::timeout(Duration::from_secs(5), socket.recv(&mut buffer)).await.unwrap().unwrap();
     assert_eq!(&buffer[..length], b"\x00hello");
 }
+
+/// Reads until the nucleus answers or closes: Some(answer), or None when it was refused
+async fn echoed(stream: &mut TcpStream, data: &[u8]) -> Option<Vec<u8>> {
+    let _ = stream.write_all(data).await;
+    let mut buffer = vec![0u8; 64];
+    match tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buffer)).await.expect("neither answered nor closed") {
+        Ok(0) | Err(_) => None,
+        Ok(read) => Some(buffer[..read].to_vec()),
+    }
+}
+
+#[tokio::test]
+async fn max_sessions_drops_new_connections_until_one_ends() {
+    let limits = fakenet_listeners::LimitsConfig { max_sessions: 2, ..Default::default() };
+    let nucleus = Nucleus::start_full("max-sessions", LinkConfig::default(), &LISTENERS(), Default::default(), None, limits).await;
+    let raw = nucleus.address("raw");
+    let mut first = TcpStream::connect(raw).await.unwrap();
+    let mut second = TcpStream::connect(raw).await.unwrap();
+    assert_eq!(echoed(&mut first, b"one").await.unwrap(), b"one");
+    assert_eq!(echoed(&mut second, b"two").await.unwrap(), b"two");
+    let mut third = TcpStream::connect(raw).await.unwrap();
+    assert_eq!(echoed(&mut third, b"three").await, None);
+    // The sessions already open keep working
+    assert_eq!(echoed(&mut first, b"again").await.unwrap(), b"again");
+    drop(first);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut fourth = TcpStream::connect(raw).await.unwrap();
+    assert_eq!(echoed(&mut fourth, b"four").await.unwrap(), b"four");
+}
+
+#[tokio::test]
+async fn per_source_rate_limits_new_sessions() {
+    let limits = fakenet_listeners::LimitsConfig { per_source_per_second: 0.01, per_source_burst: 2, ..Default::default() };
+    let nucleus = Nucleus::start_full("rate", LinkConfig::default(), &LISTENERS(), Default::default(), None, limits).await;
+    assert_eq!(raw_exchange(nucleus.address("raw"), b"a").await, b"a");
+    assert_eq!(raw_exchange(nucleus.address("raw"), b"b").await, b"b");
+    let mut third = TcpStream::connect(nucleus.address("raw")).await.unwrap();
+    assert_eq!(echoed(&mut third, b"c").await, None);
+    // UDP clients count as sessions too
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    socket.send_to(b"\x00udp", nucleus.address("raw-udp")).await.unwrap();
+    let mut buffer = [0u8; 16];
+    assert!(tokio::time::timeout(Duration::from_millis(500), socket.recv(&mut buffer)).await.is_err());
+}
+
+#[tokio::test]
+async fn memory_budget_refuses_oversized_payloads() {
+    let limits = fakenet_listeners::LimitsConfig { memory_budget_mb: 1, ..Default::default() };
+    let nucleus = Nucleus::start_full("memory", LinkConfig::default(), &LISTENERS(), Default::default(), None, limits).await;
+    let body = vec![b'x'; 2 << 20];
+    let mut stream = TcpStream::connect(nucleus.address("http")).await.unwrap();
+    let head = format!("POST /upload HTTP/1.1\r\nHost: c2.example\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+    stream.write_all(head.as_bytes()).await.unwrap();
+    let _ = stream.write_all(&body).await; // The nucleus may close before it's all sent
+    let mut response = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut response)).await.unwrap();
+    assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 413"), "{}", String::from_utf8_lossy(&response));
+    let bad = nucleus.kinds("bad_request");
+    assert!(bad[0]["error"].as_str().unwrap().contains("memory budget"), "{bad:?}");
+    // The budget is released: a small request still works
+    assert!(http_get(nucleus.address("http"), "/small.txt").await.starts_with("HTTP/1.1 200"));
+}

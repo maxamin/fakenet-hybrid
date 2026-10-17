@@ -39,6 +39,8 @@ pub struct Context {
     pub original: Option<OriginalLookup>,
     /// Response exploration (when enabled): answers what the daemon leaves to the default
     pub explorer: Option<Arc<fakenet_explorer::Explorer>>,
+    /// Session, per-source and memory limits
+    pub limits: Arc<crate::limits::Limits>,
 }
 
 pub struct Session {

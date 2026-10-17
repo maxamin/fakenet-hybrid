@@ -11,6 +11,8 @@ use crate::stream::BoxStream;
 
 const MAX_ARGS: usize = 1024;
 const MAX_BULK: usize = 16 * 1024 * 1024;
+/// All of one command's values together
+const MAX_COMMAND: usize = 64 * 1024 * 1024;
 /// Commands used to compromise Redis hosts (writing files, replication & module tricks)
 const SUSPICIOUS: &[&str] = &["CONFIG", "SLAVEOF", "REPLICAOF", "MODULE", "EVAL", "EVALSHA", "SCRIPT", "FLUSHALL", "SAVE", "BGSAVE", "DEBUG", "MIGRATE"];
 
@@ -23,15 +25,22 @@ async fn read_command(lines: &mut Lines, session: &Session) -> anyhow::Result<Op
     let count: usize = count.parse()?;
     anyhow::ensure!(count <= MAX_ARGS, "too many arguments");
     let mut args = Vec::with_capacity(count);
+    let mut held = session.ctx.limits.hold();
     for _ in 0..count {
         let Some(header) = lines.read(session).await? else { anyhow::bail!("closed mid-command") };
         let length: usize = header.strip_prefix('$').ok_or_else(|| anyhow::anyhow!("expected a bulk string"))?.parse()?;
         anyhow::ensure!(length <= MAX_BULK, "bulk string too large");
+        anyhow::ensure!(held_bytes(&args) + length <= MAX_COMMAND, "command too large");
+        held.grow(length + 2)?;
         let mut value = lines.read_exact(session, length + 2).await?; // Plus CRLF
         value.truncate(length);
         args.push(value);
     }
     Ok(Some(args))
+}
+
+fn held_bytes(args: &[Vec<u8>]) -> usize {
+    args.iter().map(Vec::len).sum()
 }
 
 fn bulk(value: &str) -> String {

@@ -37,6 +37,8 @@ pub struct Config {
     pub diverter: DiverterConfig,
     #[serde(default)]
     pub explorer: fakenet_explorer::ExplorerConfig,
+    #[serde(default)]
+    pub limits: fakenet_listeners::LimitsConfig,
     #[serde(default, rename = "listener")]
     pub listeners: Vec<ListenerConfig>,
 }
@@ -314,6 +316,7 @@ pub struct Control {
     pub secret: Option<String>,
     pub capture: Arc<fakenet_capture::Capture>,
     pub explorer: Option<Arc<fakenet_explorer::Explorer>>,
+    pub limits: Arc<fakenet_listeners::Limits>,
 }
 
 const DASHBOARD_HTML: &str = include_str!("dashboard/index.html");
@@ -377,7 +380,7 @@ fn control_response(control: &Control, request: &hyper::Request<hyper::body::Inc
         "/health" if !authorized => json_response(json!({ "status": "ok" })),
         "/health" => {
             let listeners: Vec<_> = control.listeners.iter().map(|(n, t, a)| json!({ "name": n, "transport": t, "address": a.to_string() })).collect();
-            json_response(json!({ "status": "ok", "daemon": control.link.health(), "listeners": listeners }))
+            json_response(json!({ "status": "ok", "daemon": control.link.health(), "listeners": listeners, "limits": control.limits.stats() }))
         }
         "/dashboard" => {
             // Opening /dashboard?token=SECRET sets the cookie, then drops the token from the URL
@@ -419,7 +422,7 @@ fn control_response(control: &Control, request: &hyper::Request<hyper::body::Inc
                 })
             });
             let listeners: Vec<_> = control.listeners.iter().map(|(n, t, a)| json!({ "name": n, "transport": t, "address": a.to_string() })).collect();
-            json_response(json!({ "daemon": control.link.health(), "listeners": listeners, "explorer": explorer }))
+            json_response(json!({ "daemon": control.link.health(), "listeners": listeners, "explorer": explorer, "limits": control.limits.stats() }))
         }
         _ => respond(StatusCode::NOT_FOUND, "application/json", r#"{"error":"not found"}"#.into()),
     }

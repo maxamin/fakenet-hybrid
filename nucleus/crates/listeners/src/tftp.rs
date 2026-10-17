@@ -135,6 +135,7 @@ async fn wait_for_ack(socket: &UdpSocket, block: u16) -> anyhow::Result<bool> {
 
 async fn receive_file(socket: &UdpSocket, session: &Session) -> anyhow::Result<Vec<u8>> {
     let mut contents = Vec::new();
+    let mut held = session.ctx.limits.hold();
     let mut expected: u16 = 1;
     socket.send(&packet(ACK, 0, &[])).await?;
     let mut buffer = vec![0u8; BLOCK_SIZE + 4];
@@ -161,7 +162,7 @@ async fn receive_file(socket: &UdpSocket, session: &Session) -> anyhow::Result<V
             continue;
         }
         let data = &received[4..];
-        if contents.len() + data.len() > MAX_UPLOAD {
+        if contents.len() + data.len() > MAX_UPLOAD || held.grow(data.len()).is_err() {
             socket.send(&error_packet(3, "Disk full")).await?;
             anyhow::bail!("upload too large");
         }

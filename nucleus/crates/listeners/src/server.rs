@@ -81,8 +81,12 @@ async fn serve_tcp(ctx: Arc<Context>, config: Arc<Listener>, socket: TcpListener
         tokio::select! {
             accepted = socket.accept() => match accepted {
                 Ok((stream, client)) => {
+                    let Some(permit) = ctx.limits.admit(client.ip(), &config.config.name) else {
+                        continue; // Dropping the stream closes it
+                    };
                     let (ctx, config) = (ctx.clone(), config.clone());
                     connections.spawn(async move {
+                        let _permit = permit;
                         if let Err(e) = dispatch::handle_tcp(ctx, config.clone(), stream, client).await {
                             tracing::debug!("[{}] {client}: {e:#}", config.config.name);
                         }
@@ -99,7 +103,11 @@ async fn serve_tcp(ctx: Arc<Context>, config: Arc<Listener>, socket: TcpListener
     }
 }
 
-type UdpSessions = Mutex<HashMap<SocketAddr, (Arc<Mutex<Session>>, Instant)>>;
+type UdpSessions = Mutex<HashMap<SocketAddr, (Arc<Mutex<Session>>, Instant, crate::limits::SessionPermit)>>;
+
+/// Datagrams being answered at once per UDP listener; past it, new ones are dropped (UDP
+/// may lose packets anyway) rather than queued without bound
+const MAX_UDP_IN_FLIGHT: usize = 1024;
 
 /// One session per client address, expired after the idle timeout. Datagrams from one
 /// client are answered in order; different clients in parallel.
@@ -126,10 +134,14 @@ async fn serve_udp(ctx: Arc<Context>, config: Arc<Listener>, socket: Arc<UdpSock
                         continue;
                     }
                 };
+                if tasks.len() >= MAX_UDP_IN_FLIGHT {
+                    continue;
+                }
                 let data = buffer[..length].to_vec();
                 let session = {
                     let mut table = sessions.lock().await;
-                    let entry = table.entry(client).or_insert_with(|| {
+                    if !table.contains_key(&client) {
+                        let Some(permit) = ctx.limits.admit(client.ip(), &config.config.name) else { continue };
                         let redirected = original.filter(|o| *o != local);
                         let mut session = Session::new(ctx.clone(), &config.config.name, fakenet_schema::Protocol::Raw, Transport::Udp, client, local, redirected);
                         session.custom = config.custom.clone();
@@ -137,8 +149,9 @@ async fn serve_udp(ctx: Arc<Context>, config: Arc<Listener>, socket: Arc<UdpSock
                         if protocol != fakenet_schema::Protocol::Raw {
                             session.set_protocol(protocol, false);
                         }
-                        (Arc::new(Mutex::new(session)), Instant::now())
-                    });
+                        table.insert(client, (Arc::new(Mutex::new(session)), Instant::now(), permit));
+                    }
+                    let entry = table.get_mut(&client).expect("inserted above");
                     entry.1 = Instant::now();
                     entry.0.clone()
                 };
@@ -157,7 +170,7 @@ async fn serve_udp(ctx: Arc<Context>, config: Arc<Listener>, socket: Arc<UdpSock
             }
             _ = sweep.tick() => {
                 let idle = ctx.timeout;
-                sessions.lock().await.retain(|_, (_, last)| last.elapsed() < idle);
+                sessions.lock().await.retain(|_, (_, last, _)| last.elapsed() < idle);
             }
             Some(_) = tasks.join_next(), if !tasks.is_empty() => {}
         }

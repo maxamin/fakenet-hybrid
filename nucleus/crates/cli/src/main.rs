@@ -159,6 +159,7 @@ async fn main() -> anyhow::Result<()> {
         false => None,
     };
     let link = Link::start(config.link(secret.as_deref()));
+    let limits = Arc::new(fakenet_listeners::Limits::new(&config.limits));
     let ctx = Arc::new(Context {
         link: link.clone(),
         capture: capture.clone(),
@@ -168,6 +169,7 @@ async fn main() -> anyhow::Result<()> {
         first_data_timeout: Duration::from_millis(config.nucleus.first_data_timeout_ms),
         original: diverter.as_ref().and_then(Diverter::original_lookup),
         explorer: explorer.clone(),
+        limits: limits.clone(),
     });
     let server = Server::start(ctx, config.nucleus.bind, &config.listeners).await?;
     for (name, transport, address) in &server.bound {
@@ -183,6 +185,7 @@ async fn main() -> anyhow::Result<()> {
         secret: secret.clone(),
         capture: capture.clone(),
         explorer: explorer.clone(),
+        limits,
     });
     tracing::info!("dashboard: http://{}/dashboard{}", config.nucleus.health, if secret.is_some() { "?token=<the link secret>" } else { "" });
     let health_task = tokio::spawn(serve_control(health, control));
