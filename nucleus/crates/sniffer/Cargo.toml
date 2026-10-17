@@ -7,3 +7,5 @@ license.workspace = true
 
 [dependencies]
 fakenet-schema.workspace = true
+md-5.workspace = true
+ring.workspace = true

@@ -6,6 +6,8 @@
 //! One deliberate difference: FakeNet-NG scores FTP commands +1, so FTP on port 80 ties with
 //! HTTP's port score. Here every recognizable message scores +2, so content beats port.
 
+pub mod tls;
+
 use fakenet_schema::{Protocol, Transport};
 
 /// Candidates in tie-break order. FTP precedes POP3, so a bare "USER x" on a port that's

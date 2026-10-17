@@ -12,6 +12,8 @@ max_pcap_mb = 1024               # ...and traffic.pcap / wire.pcap past this one
 keep_rotations = 4               # rotated files kept
 max_files_mb = 2048              # stop saving payloads to files/ past this total
 wire_capture = false             # also record every real packet to wire.pcap (root/Administrator)
+tls_keylog = true                # TLS secrets to tls-keys.log: Wireshark decrypts wire.pcap with it
+fingerprints = ["fingerprints/sslbl-ja3.csv"]  # known JA3/JA4/HASSH lists (see fingerprints/README.md)
 
 [limits]                         # so a hostile sample can't exhaust the nucleus (0: unlimited)
 max_sessions = 4096              # concurrent TCP connections + UDP clients; new ones past it are dropped

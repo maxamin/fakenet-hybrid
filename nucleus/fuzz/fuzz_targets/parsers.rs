@@ -37,4 +37,12 @@ fuzz_target!(|data: &[u8]| {
         assert!(joined.starts_with("/srv/root"), "{joined:?}");
     }
     let _ = custom::parse_ini(&text);
+    // ClientHellos: fingerprints have fixed shapes; completeness agrees with parsing
+    if let Some(hello) = fakenet_sniffer::tls::ClientHello::parse(data) {
+        assert_eq!(hello.ja3().len(), 32);
+        let ja4 = hello.ja4(false);
+        assert_eq!(ja4.len(), 36, "{ja4}");
+    }
+    let _ = fakenet_sniffer::tls::hello_wants_more(data);
+    let _ = fakenet_sniffer::tls::parse_known(&text);
 });

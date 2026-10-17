@@ -172,6 +172,7 @@ async fn nucleus_and_camel_daemon() {
         original: None,
         explorer: None,
         limits: Default::default(),
+        known_fingerprints: Default::default(),
     });
     let server = Server::start(ctx, "127.0.0.1".parse().unwrap(), &[
         listener("http", Protocol::Http, Transport::Tcp),

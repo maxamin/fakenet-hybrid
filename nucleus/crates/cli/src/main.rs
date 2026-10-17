@@ -143,6 +143,10 @@ async fn main() -> anyhow::Result<()> {
     // Analysts install this in the analysis VM so HTTPS interception is trusted
     let ca_path = capture.dir().join("ca.pem");
     std::fs::write(&ca_path, tls.ca_pem()).with_context(|| format!("writing {}", ca_path.display()))?;
+    if config.nucleus.tls_keylog {
+        let keys = capture.dir().join("tls-keys.log");
+        tls.log_keys_to(&keys).with_context(|| format!("opening {}", keys.display()))?;
+    }
 
     // From here on, dropping `diverter` (also on an early error return) restores the network
     let diverter = match config.diverter.enabled {
@@ -170,6 +174,7 @@ async fn main() -> anyhow::Result<()> {
         original: diverter.as_ref().and_then(Diverter::original_lookup),
         explorer: explorer.clone(),
         limits: limits.clone(),
+        known_fingerprints: Arc::new(config.known_fingerprints()?),
     });
     let server = Server::start(ctx, config.nucleus.bind, &config.listeners).await?;
     for (name, transport, address) in &server.bound {

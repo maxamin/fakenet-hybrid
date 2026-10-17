@@ -157,6 +157,11 @@ Without the token, the nucleus's `/health` only says `{"status":"ok"}`.
   handshake (with SNI), event sent to the daemon, decision or fallback (with its reason),
   credentials, email, upload and download. Each line carries the session ID, source,
   original destination and the client process (Linux, and Windows when diverting).
+- TLS and SSH client fingerprints on `tls_handshake` (JA3, its full string, and JA4) and
+  `ssh_client` (HASSH) records. They identify the client's TLS/SSH library even when the SNI
+  and certificate say nothing. With `[nucleus] fingerprints` lists (the sample config uses
+  abuse.ch SSLBL's JA3 list, see `nucleus/config/fingerprints/`), matches are labelled
+  `known` and appear in the report.
 - `traffic.pcap`: decrypted conversations, synthesized per session (open with Wireshark).
 - `wire.pcap`: with `[nucleus] wire_capture = true`, every real packet as it crossed the
   wire (including traffic that was never diverted).
@@ -166,6 +171,9 @@ Without the token, the nucleus's `/health` only says `{"status":"ok"}`.
   decisions, fallbacks), then everything by process. `fakenet-nucleus --report
   events.jsonl -o report.html` renders one at any time.
 - `ca.pem`: the interception CA.
+- `tls-keys.log`: every TLS session's secrets (TCP and QUIC) in the NSS key log format
+  (`[nucleus] tls_keylog`, on by default). Point Wireshark's TLS "(Pre)-Master-Secret log
+  filename" at it to decrypt the real packets in `wire.pcap`.
 
 `[limits]` keeps a hostile sample from exhausting the nucleus: `max_sessions` concurrent
 sessions, an optional `per_source_per_second` rate, and a `memory_budget_mb` for payloads

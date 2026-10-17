@@ -64,6 +64,12 @@ pub struct NucleusConfig {
     pub max_files_mb: u64,
     /// Also record every real packet to wire.pcap (needs root/Administrator)
     pub wire_capture: bool,
+    /// CSV lists of known JA3/JA4/HASSH fingerprints (fingerprint first, label last), e.g.
+    /// abuse.ch SSLBL's ja3_fingerprints.csv; matches are labelled in the capture & report
+    pub fingerprints: Vec<PathBuf>,
+    /// Write TLS session secrets to capture_dir/tls-keys.log (NSS key log format), so
+    /// Wireshark can decrypt wire.pcap
+    pub tls_keylog: bool,
 }
 
 impl Default for NucleusConfig {
@@ -79,6 +85,8 @@ impl Default for NucleusConfig {
             keep_rotations: 4,
             max_files_mb: 2048,
             wire_capture: false,
+            fingerprints: Vec::new(),
+            tls_keylog: true,
         }
     }
 }
@@ -129,6 +137,7 @@ impl Config {
             }
         };
         resolve(&mut self.nucleus.capture_dir);
+        self.nucleus.fingerprints.iter_mut().for_each(resolve);
         for path in [&mut self.daemon.secret_file, &mut self.defaults.http.webroot, &mut self.defaults.ftp.root, &mut self.defaults.tftp.root] {
             if let Some(path) = path.as_mut() {
                 resolve(path);
@@ -143,6 +152,16 @@ impl Config {
         for path in explorer.templates.iter_mut().chain(explorer.samples.iter_mut()).chain(explorer.rea.iter_mut()).chain(explorer.coverage_dir.iter_mut()) {
             resolve(path);
         }
+    }
+
+    /// The known-fingerprint lists, merged (later files win)
+    pub fn known_fingerprints(&self) -> anyhow::Result<std::collections::HashMap<String, String>> {
+        let mut known = std::collections::HashMap::new();
+        for path in &self.nucleus.fingerprints {
+            let text = std::fs::read_to_string(path).with_context(|| format!("reading fingerprints {}", path.display()))?;
+            known.extend(fakenet_sniffer::tls::parse_known(&text));
+        }
+        Ok(known)
     }
 
     /// Enforces the lab-safety rules: control interfaces on loopback only

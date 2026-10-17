@@ -466,6 +466,7 @@ dependencies = [
  "fakenet-link",
  "fakenet-listeners",
  "fakenet-schema",
+ "fakenet-sniffer",
  "hickory-proto",
  "http-body-util",
  "hyper",
@@ -575,6 +576,8 @@ name = "fakenet-sniffer"
 version = "0.1.0"
 dependencies = [
  "fakenet-schema",
+ "md-5",
+ "ring",
 ]
 
 [[package]]

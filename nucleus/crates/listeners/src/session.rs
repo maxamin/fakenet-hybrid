@@ -41,6 +41,8 @@ pub struct Context {
     pub explorer: Option<Arc<fakenet_explorer::Explorer>>,
     /// Session, per-source and memory limits
     pub limits: Arc<crate::limits::Limits>,
+    /// Known JA3/JA4/HASSH fingerprints -> label (see fakenet_sniffer::tls::parse_known)
+    pub known_fingerprints: Arc<std::collections::HashMap<String, String>>,
 }
 
 pub struct Session {

@@ -84,7 +84,8 @@ pub async fn handle(stream: BoxStream, mut session: Session) -> anyhow::Result<(
     };
     let kexinit = read_packet(&mut lines, &session).await.ok().flatten().and_then(|p| KexInit::parse(&p));
     let hassh = kexinit.as_ref().map(KexInit::hassh);
-    session.log("ssh_client", json!({ "version": client_version, "hassh": hassh }));
+    let known = hassh.as_ref().and_then(|h| session.ctx.known_fingerprints.get(h));
+    session.log("ssh_client", json!({ "version": client_version, "hassh": hassh, "known": known }));
     let meta = json!({ "client_version": client_version, "hassh": hassh, "kexinit": kexinit.as_ref().map(KexInit::to_json) });
     // Nothing more to say without a real key exchange: let the daemon's response (if any)
     // through, then the client gives up on its own (or the daemon closes)

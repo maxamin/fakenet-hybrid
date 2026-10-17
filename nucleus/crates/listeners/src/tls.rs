@@ -3,7 +3,9 @@
 //! the analysis VM, and clients see valid certificates.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::io::Write as _;
+use std::path::Path;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{anyhow, Result};
 use rcgen::{BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, KeyUsagePurpose, SanType};
@@ -19,6 +21,27 @@ pub struct TlsAuthority {
     ca_der: CertificateDer<'static>,
     ca_pem: String,
     cache: Mutex<HashMap<String, Arc<CertifiedKey>>>,
+    key_log: OnceLock<Arc<KeyLogFile>>,
+}
+
+/// TLS session secrets in the NSS key log format (what SSLKEYLOGFILE produces), so
+/// Wireshark can decrypt the real packets in wire.pcap
+#[derive(Debug)]
+struct KeyLogFile(Mutex<std::fs::File>);
+
+impl rustls::KeyLog for KeyLogFile {
+    fn log(&self, label: &str, client_random: &[u8], secret: &[u8]) {
+        let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let line = format!("{label} {} {}\n", hex(client_random), hex(secret));
+        let mut file = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = file.write_all(line.as_bytes()) {
+            tracing::warn!("TLS key log: {e}");
+        }
+    }
+
+    fn will_log(&self, _label: &str) -> bool {
+        true
+    }
 }
 
 impl std::fmt::Debug for TlsAuthority {
@@ -43,7 +66,24 @@ impl TlsAuthority {
             ca_pem: cert.pem(),
             issuer: Issuer::new(params, key),
             cache: Mutex::new(HashMap::new()),
+            key_log: OnceLock::new(),
         })
+    }
+
+    /// Appends every TLS session's secrets (TLS over TCP and QUIC) to `path`, for
+    /// decrypting wire.pcap in Wireshark (Preferences > Protocols > TLS > (Pre)-Master-Secret
+    /// log filename). Call before serving; later calls are ignored.
+    pub fn log_keys_to(&self, path: &Path) -> Result<()> {
+        let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+        let _ = self.key_log.set(Arc::new(KeyLogFile(Mutex::new(file))));
+        Ok(())
+    }
+
+    fn with_key_log(&self, mut config: rustls::ServerConfig) -> Arc<rustls::ServerConfig> {
+        if let Some(key_log) = self.key_log.get() {
+            config.key_log = key_log.clone();
+        }
+        Arc::new(config)
     }
 
     pub fn ca_pem(&self) -> &str {
@@ -99,7 +139,7 @@ impl TlsAuthority {
             .with_no_client_auth()
             .with_cert_resolver(Arc::new(Fixed(certified)));
         config.alpn_protocols = alpn;
-        Ok(Arc::new(config))
+        Ok(self.with_key_log(config))
     }
 
     pub fn server_config(self: &Arc<Self>, alpn: &[&[u8]]) -> Arc<rustls::ServerConfig> {
@@ -109,7 +149,7 @@ impl TlsAuthority {
             .with_no_client_auth()
             .with_cert_resolver(Arc::new(Resolver(self.clone())));
         config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
-        Arc::new(config)
+        self.with_key_log(config)
     }
 }
 

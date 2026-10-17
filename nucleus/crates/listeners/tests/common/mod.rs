@@ -56,6 +56,7 @@ impl Nucleus {
             original: None,
             explorer,
             limits: Arc::new(fakenet_listeners::Limits::new(&limits)),
+            known_fingerprints: Default::default(),
         });
         let server = Server::start(ctx, "127.0.0.1".parse().unwrap(), listeners).await.unwrap();
         Nucleus { server, dir, ca }

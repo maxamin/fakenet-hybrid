@@ -48,6 +48,7 @@ fn harness() -> &'static Harness {
                 original: None,
                 explorer: None,
                 limits: Default::default(),
+                known_fingerprints: Default::default(),
             });
             (ctx, tokio::net::UdpSocket::bind("127.0.0.1:0").await.expect("socket"))
         });

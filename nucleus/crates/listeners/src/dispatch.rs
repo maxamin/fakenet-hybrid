@@ -115,7 +115,9 @@ async fn peek(stream: &mut BoxStream, ctx: &Context) -> anyhow::Result<Vec<u8>> 
 pub(crate) async fn terminate_tls(stream: BoxStream, session: &mut Session) -> anyhow::Result<BoxStream> {
     let ctx = session.ctx.clone();
     let accept = async {
-        let start = tokio_rustls::LazyConfigAcceptor::new(rustls::server::Acceptor::default(), stream).await?;
+        // The raw ClientHello, for the client's fingerprints; then replayed to rustls
+        let (raw_hello, stream) = read_client_hello(stream).await?;
+        let start = tokio_rustls::LazyConfigAcceptor::new(rustls::server::Acceptor::default(), Box::new(PrefixedStream::new(raw_hello.clone(), stream))).await?;
         let hello = start.client_hello();
         let sni = hello.server_name().map(str::to_string);
         let offered: Vec<Vec<u8>> = hello.alpn().map(|protocols| protocols.map(<[u8]>::to_vec).collect()).unwrap_or_default();
@@ -123,12 +125,21 @@ pub(crate) async fn terminate_tls(stream: BoxStream, session: &mut Session) -> a
         let name = sni.clone().or_else(|| session.tls_fallback_name.clone()).unwrap_or_else(|| session.builder.dst.ip().to_string());
         let config = ctx.tls.config_for(&name, alpn)?;
         let tls = start.into_stream(config).await?;
-        anyhow::Ok((tls, sni, name))
+        anyhow::Ok((tls, sni, name, raw_hello))
     };
     match tokio::time::timeout(ctx.timeout, accept).await {
-        Ok(Ok((tls, sni, certificate))) => {
+        Ok(Ok((tls, sni, certificate, raw_hello))) => {
             let alpn = tls.get_ref().1.alpn_protocol().map(|p| String::from_utf8_lossy(p).into_owned());
-            session.log("tls_handshake", json!({ "sni": sni, "certificate": certificate, "alpn": alpn }));
+            let mut record = json!({ "sni": sni, "certificate": certificate, "alpn": alpn });
+            if let Some(hello) = fakenet_sniffer::tls::ClientHello::parse(&raw_hello) {
+                let (ja3, ja4) = (hello.ja3(), hello.ja4(false));
+                let known = ctx.known_fingerprints.get(&ja3).or_else(|| ctx.known_fingerprints.get(&ja4));
+                record["ja3"] = json!(ja3);
+                record["ja3_string"] = json!(hello.ja3_string());
+                record["ja4"] = json!(ja4);
+                record["known"] = json!(known);
+            }
+            session.log("tls_handshake", record);
             Ok(Box::new(tls))
         }
         Ok(Err(e)) => {
@@ -140,6 +151,20 @@ pub(crate) async fn terminate_tls(stream: BoxStream, session: &mut Session) -> a
             anyhow::bail!("TLS handshake timed out")
         }
     }
+}
+
+/// Reads the client's whole ClientHello (bounded by fakenet_sniffer::tls::MAX_HELLO)
+async fn read_client_hello(mut stream: BoxStream) -> anyhow::Result<(Vec<u8>, BoxStream)> {
+    let mut hello = Vec::new();
+    let mut buffer = [0u8; 4096];
+    while fakenet_sniffer::tls::hello_wants_more(&hello) {
+        let read = stream.read(&mut buffer).await?;
+        if read == 0 {
+            break; // rustls reports the truncated handshake
+        }
+        hello.extend_from_slice(&buffer[..read]);
+    }
+    Ok((hello, stream))
 }
 
 /// Which handler a UDP datagram gets

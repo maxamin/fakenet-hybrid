@@ -108,7 +108,9 @@ async fn auto_listener_sniffs_and_unwraps_tls() {
     assert!(page.starts_with("HTTP/1.1 200 OK"), "{page}");
     assert!(page.to_ascii_lowercase().contains("content-type: text/plain"));
 
-    // HTTPS to the same port, with a certificate minted for the SNI
+    // HTTPS to the same port, with a certificate minted for the SNI (and its secrets logged)
+    let keys = nucleus.dir.join("tls-keys.log");
+    nucleus.ca.log_keys_to(&keys).unwrap();
     let connector = nucleus.tls_connector();
     let tcp = TcpStream::connect(auto).await.unwrap();
     let tls = connector.connect("c2.example".try_into().unwrap(), tcp).await.unwrap();
@@ -122,6 +124,12 @@ async fn auto_listener_sniffs_and_unwraps_tls() {
     assert_eq!(detected, [("http".to_string(), false), ("http".to_string(), true), ("raw".to_string(), false)]);
     let handshake = nucleus.kinds("tls_handshake");
     assert_eq!(handshake[0]["sni"], "c2.example");
+    // The client's fingerprints (rustls: TLS 1.3, SNI, no ALPN asked)
+    assert!(handshake[0]["ja4"].as_str().unwrap().starts_with("t13d"), "{}", handshake[0]);
+    assert_eq!(handshake[0]["ja3"].as_str().unwrap().len(), 32);
+    assert!(handshake[0]["ja3_string"].as_str().unwrap().starts_with("771,"));
+    let keys = std::fs::read_to_string(&keys).unwrap();
+    assert!(keys.lines().any(|l| l.starts_with("CLIENT_TRAFFIC_SECRET_0 ") && l.split(' ').nth(1).unwrap().len() == 64), "{keys}");
 
     // DNS over TCP on its fixed listener
     let mut stream = TcpStream::connect(nucleus.address("dns-tcp")).await.unwrap();
