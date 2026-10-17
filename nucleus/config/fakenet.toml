@@ -21,6 +21,11 @@ per_source_per_second = 0        # new sessions per second per source address (o
 per_source_burst = 200
 memory_budget_mb = 1024          # payloads buffered at once (bodies, uploads, emails); past it they're refused
 
+[yara]                           # scan every saved payload (bodies, uploads, emails) with YARA
+rules = []                       # rule files or folders of *.yar/*.yara, e.g. ["yara-rules"]
+# yara = "yara"                  # the stock YARA tools (on PATH by default; yara.exe/yarac.exe on Windows)
+# yarac = "yarac"
+
 [daemon]                         # the Camel daemon (loopback only; enforced). "" disables a channel
 websocket_url = "ws://127.0.0.1:8090/link"
 http_url = "http://127.0.0.1:8091/decide"

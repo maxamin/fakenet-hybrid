@@ -28,7 +28,11 @@ struct Args {
     /// Render an events.jsonl as an HTML report (to --output, default report.html), and exit
     #[arg(long, value_name = "EVENTS")]
     report: Option<PathBuf>,
-    /// Output file for --report or --import-fakenet-ini
+    /// Write an events.jsonl's indicators (CSV, STIX 2.1, MISP) to the --output folder
+    /// (default: the events file's folder), and exit
+    #[arg(long, value_name = "EVENTS")]
+    indicators: Option<PathBuf>,
+    /// Output file for --report or --import-fakenet-ini (a folder for --indicators)
     #[arg(short, long, value_name = "FILE")]
     output: Option<PathBuf>,
     /// Convert a FakeNet-NG config (default.ini) to this nucleus's TOML (to --output, default
@@ -100,6 +104,12 @@ async fn main() -> anyhow::Result<()> {
         println!("Wrote {}", output.display());
         return Ok(());
     }
+    if let Some(events) = &args.indicators {
+        let dir = args.output.clone().or_else(|| events.parent().map(PathBuf::from)).unwrap_or_else(|| PathBuf::from("."));
+        let count = fakenet_cli::write_indicators(std::slice::from_ref(events), &dir, None)?;
+        println!("Wrote {count} indicators to {}/indicators.{{csv,stix.json,misp.json}}", dir.display());
+        return Ok(());
+    }
     if let Some(path) = &args.generate_secret {
         fakenet_cli::generate_secret(path)?;
         println!("Wrote a new link secret to {}", path.display());
@@ -127,6 +137,14 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("No [daemon] secret_file: the link to the daemon is unauthenticated");
     }
     if args.check {
+        config.known_fingerprints()?;
+        if !config.yara.rules.is_empty() {
+            let files = fakenet_capture::yara::rule_files(&config.yara.rules)?;
+            let compiled = std::env::temp_dir().join(format!("fakenet-check-{}.yarc", std::process::id()));
+            let result = fakenet_capture::yara::compile(&config.yara.yarac, &files, &compiled);
+            let _ = std::fs::remove_file(&compiled);
+            result.context("[yara]")?;
+        }
         println!("{} is valid ({} listeners)", args.config.display(), config.listeners.len());
         return Ok(());
     }
@@ -139,6 +157,9 @@ async fn main() -> anyhow::Result<()> {
         }
         false => None,
     };
+    if !config.yara.rules.is_empty() {
+        capture.enable_yara(&config.yara.rules, &config.yara.yara, &config.yara.yarac).context("[yara]")?;
+    }
     let tls = Arc::new(TlsAuthority::generate()?);
     // Analysts install this in the analysis VM so HTTPS interception is trusted
     let ca_path = capture.dir().join("ca.pem");
@@ -232,15 +253,24 @@ async fn main() -> anyhow::Result<()> {
             tracing::warn!("Could not write {}: {e}", path.display());
         }
     }
+    // Payloads saved until the listeners stopped are scanned before the report
+    capture.finish_scans();
     capture.log("nucleus_stopped", json!({ "daemon": link.health() }));
     let report = capture.dir().join("report.html");
     match fakenet_cli::write_report(&capture.event_files(), &report) {
         Ok(()) => tracing::info!("Report: {}", report.display()),
         Err(e) => tracing::warn!("Could not write the report: {e:#}"),
     }
-    if let (Some(sample), Some(outcome)) = (&sample, outcome) {
-        let summary = fakenet_cli::run::summary(sample, &outcome, &capture);
+    if let (Some(sample), Some(outcome)) = (&sample, &outcome) {
+        let summary = fakenet_cli::run::summary(sample, outcome, &capture);
         std::fs::write(capture.dir().join("run.json"), serde_json::to_string_pretty(&summary)?)?;
+    }
+    // After run.json: the sample is linked to its indicators
+    match fakenet_cli::write_indicators(&capture.event_files(), capture.dir(), None) {
+        Ok(count) => tracing::info!("Indicators: {count} in {}", capture.dir().join("indicators.*").display()),
+        Err(e) => tracing::warn!("Could not write the indicators: {e:#}"),
+    }
+    if let Some(outcome) = &outcome {
         println!("Run finished ({}): {}", outcome.reason, capture.dir().display());
     }
     Ok(())

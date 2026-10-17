@@ -124,6 +124,6 @@ pub fn summary(sample: &Sample, outcome: &Outcome, capture: &Capture) -> Value {
         },
         "records": kinds,
         "events_by_protocol": protocols,
-        "files": { "events": "events.jsonl", "pcap": "traffic.pcap", "report": "report.html", "explorer_map": "explorer-map.json", "captured": "files/" },
+        "files": { "events": "events.jsonl", "pcap": "traffic.pcap", "report": "report.html", "explorer_map": "explorer-map.json", "captured": "files/", "indicators": ["indicators.csv", "indicators.stix.json", "indicators.misp.json"] },
     })
 }

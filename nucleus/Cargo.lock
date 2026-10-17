@@ -449,8 +449,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "fakenet-schema",
+ "ring",
  "serde_json",
+ "time",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

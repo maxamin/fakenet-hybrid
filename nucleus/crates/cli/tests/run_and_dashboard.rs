@@ -94,4 +94,15 @@ async fn runs_a_sample_and_serves_the_dashboard() {
     let events = std::fs::read_to_string(folder.join("events.jsonl")).unwrap();
     assert!(events.contains("\"kind\":\"sample_started\"") && events.contains("\"kind\":\"sample_exited\""));
     assert!(folder.join("report.html").exists());
+    // Indicators, with the sample linked to them
+    let csv = std::fs::read_to_string(folder.join("indicators.csv")).unwrap();
+    assert!(csv.lines().any(|l| l.starts_with("url,") && l.contains("/beacon.php?id=1")), "{csv}");
+    assert!(csv.lines().any(|l| l.starts_with("user-agent,curl/")), "{csv}");
+    let stix: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(folder.join("indicators.stix.json")).unwrap()).unwrap();
+    let objects = stix["objects"].as_array().unwrap();
+    let malware = objects.iter().find(|o| o["type"] == "malware").unwrap();
+    assert_eq!(malware["name"], "beacon.sh");
+    assert!(objects.iter().any(|o| o["type"] == "relationship" && o["target_ref"] == malware["id"]));
+    let misp: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(folder.join("indicators.misp.json")).unwrap()).unwrap();
+    assert!(misp["Event"]["Attribute"].as_array().unwrap().iter().any(|a| a["type"] == "sha256" && a["value"] == run["sample"]["sha256"]));
 }

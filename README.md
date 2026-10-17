@@ -70,6 +70,7 @@ upstream/                            reference only, git-ignored: the FakeNet-NG
 - Java 21 and Maven 3.9 (for the daemon)
 - Linux diversion: root, `iptables` / `ip6tables` with the `nat` table (REDIRECT, addrtype),
   plus `nfnetlink_queue` if you use `excluded_processes`
+- Optional: YARA 4 (`yara`, `yarac`) for `[yara]`
 - Windows diversion: Administrator, and [WinDivert 2.2](https://reqrypt.org/windivert.html)
   (`WinDivert.dll`, `WinDivert.lib`, `WinDivert64.sys` from the release zip's `x64` folder)
 
@@ -165,11 +166,22 @@ Without the token, the nucleus's `/health` only says `{"status":"ok"}`.
 - `traffic.pcap`: decrypted conversations, synthesized per session (open with Wireshark).
 - `wire.pcap`: with `[nucleus] wire_capture = true`, every real packet as it crossed the
   wire (including traffic that was never diverted).
-- `files/`: HTTP request bodies, emails (`.eml`), FTP and TFTP uploads.
+- `files/`: HTTP request bodies, emails (`.eml`), FTP and TFTP uploads. With `[yara] rules`
+  (files or folders of `.yar`), each is scanned with YARA as it's saved; matches are
+  `yara_match` records and a report section. The rules compile at start (`--check` too), so
+  a broken rule fails early. Needs the YARA tools (`yara`, `yarac`) on PATH.
 - `report.html`: written at every stop. It shows the key indicators (DNS, URLs, SNI,
   credentials, emails, files, SSH clients, IRC, suspicious commands, tunnels, daemon
   decisions, fallbacks), then everything by process. `fakenet-nucleus --report
   events.jsonl -o report.html` renders one at any time.
+- `indicators.csv`, `indicators.stix.json` (STIX 2.1), `indicators.misp.json` (MISP event):
+  written at every stop. They hold the domains, URLs, directly contacted public IPs,
+  User-Agents, email addresses and JA3/JA4/HASSH fingerprints the sample reached for,
+  leaving out the nucleus's own fake answers and OS connectivity checks. In a `--run`
+  folder, the sample (name, SHA-256, MD5) is included and linked to every indicator.
+  `fakenet-nucleus --indicators events.jsonl [-o DIR]` re-exports any capture. These are
+  sandbox observations: review them before blocking on them (MISP attributes have
+  `to_ids` off).
 - `ca.pem`: the interception CA.
 - `tls-keys.log`: every TLS session's secrets (TCP and QUIC) in the NSS key log format
   (`[nucleus] tls_keylog`, on by default). Point Wireshark's TLS "(Pre)-Master-Secret log

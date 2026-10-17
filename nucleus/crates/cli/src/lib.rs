@@ -39,6 +39,8 @@ pub struct Config {
     pub explorer: fakenet_explorer::ExplorerConfig,
     #[serde(default)]
     pub limits: fakenet_listeners::LimitsConfig,
+    #[serde(default)]
+    pub yara: YaraConfig,
     #[serde(default, rename = "listener")]
     pub listeners: Vec<ListenerConfig>,
 }
@@ -91,6 +93,23 @@ impl Default for NucleusConfig {
     }
 }
 
+/// YARA scanning of captured payloads (off without rules)
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct YaraConfig {
+    /// Rule files, or folders of *.yar / *.yara
+    pub rules: Vec<PathBuf>,
+    /// The YARA tools (on PATH by default)
+    pub yara: String,
+    pub yarac: String,
+}
+
+impl Default for YaraConfig {
+    fn default() -> Self {
+        YaraConfig { rules: Vec::new(), yara: "yara".into(), yarac: "yarac".into() }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct DaemonConfig {
@@ -138,6 +157,7 @@ impl Config {
         };
         resolve(&mut self.nucleus.capture_dir);
         self.nucleus.fingerprints.iter_mut().for_each(resolve);
+        self.yara.rules.iter_mut().for_each(resolve);
         for path in [&mut self.daemon.secret_file, &mut self.defaults.http.webroot, &mut self.defaults.ftp.root, &mut self.defaults.tftp.root] {
             if let Some(path) = path.as_mut() {
                 resolve(path);
@@ -260,17 +280,41 @@ fn loopback_url(url: &str) -> bool {
 /// The HTML report of event logs (in order, e.g. rotated ones first), with the explorer's
 /// map if there is one next to them
 pub fn write_report(event_files: &[PathBuf], output: &Path) -> anyhow::Result<()> {
-    let mut records = Vec::new();
-    for file in event_files {
-        let text = std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
-        records.extend(text.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()));
-    }
+    let records = read_records(event_files)?;
     let map = event_files
         .last()
         .and_then(|f| f.parent())
         .and_then(|dir| std::fs::read_to_string(dir.join("explorer-map.json")).ok())
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
     std::fs::write(output, fakenet_capture::report::render_with_map(&records, map.as_ref())).with_context(|| format!("writing {}", output.display()))
+}
+
+fn read_records(event_files: &[PathBuf]) -> anyhow::Result<Vec<serde_json::Value>> {
+    let mut records = Vec::new();
+    for file in event_files {
+        let text = std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
+        records.extend(text.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()));
+    }
+    Ok(records)
+}
+
+/// Writes the event logs' indicators to `dir`: indicators.csv, indicators.stix.json (STIX
+/// 2.1) and indicators.misp.json. `sample` is run.json's sample ({name, sha256, md5}), or
+/// read from dir/run.json when there is one. Returns how many indicators there were.
+pub fn write_indicators(event_files: &[PathBuf], dir: &Path, sample: Option<&serde_json::Value>) -> anyhow::Result<usize> {
+    use fakenet_capture::indicators;
+    let records = read_records(event_files)?;
+    let found = indicators::collect(&records);
+    let from_run = std::fs::read_to_string(dir.join("run.json")).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).map(|run| run["sample"].clone());
+    let sample = sample.or(from_run.as_ref());
+    let write = |name: &str, contents: String| {
+        let path = dir.join(name);
+        std::fs::write(&path, contents).with_context(|| format!("writing {}", path.display()))
+    };
+    write("indicators.csv", indicators::to_csv(&found))?;
+    write("indicators.stix.json", serde_json::to_string_pretty(&indicators::to_stix(&found, sample))?)?;
+    write("indicators.misp.json", serde_json::to_string_pretty(&indicators::to_misp(&found, sample))?)?;
+    Ok(found.len())
 }
 
 /// Feeds coverage written by a tracer into the explorer: new drcov files (once they've
