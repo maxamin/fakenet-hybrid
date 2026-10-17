@@ -56,7 +56,7 @@ jobs:
           $ver = "${{ github.ref_name }}".TrimStart('v')
           "VERSION=$ver" | Out-File -Append $env:GITHUB_ENV
           $stage = "stage"
-          New-Item -ItemType Directory -Force "$stage\bin","$stage\daemon","$stage\config","$stage\deploy\windows" | Out-Null
+          New-Item -ItemType Directory -Force "$stage\bin","$stage\daemon","$stage\config","$stage\deploy\windows","dist" | Out-Null
           Copy-Item nucleus\target\release\fakenet-nucleus.exe "$stage\bin\"
           Copy-Item "$env:WINDIVERT_PATH\WinDivert.dll","$env:WINDIVERT_PATH\WinDivert64.sys" "$stage\bin\"
           Copy-Item daemon\target\fakenet-daemon.jar "$stage\daemon\"
