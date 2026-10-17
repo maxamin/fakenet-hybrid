@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use clap::Parser;
 use fakenet_capture::Capture;
-use fakenet_cli::{serve_health, Config};
+use fakenet_cli::{serve_control, Config, Control};
 use fakenet_diverter::Diverter;
 use fakenet_link::Link;
 use fakenet_listeners::{Context, Server, TlsAuthority};
@@ -35,6 +35,17 @@ struct Args {
     /// stdout), and exit
     #[arg(long, value_name = "INI")]
     import_fakenet_ini: Option<PathBuf>,
+    /// Analyse one sample: start everything, run SAMPLE, stop when it exits (plus a grace
+    /// period) or at --timeout, in a capture folder of its own with a run.json summary.
+    /// This RUNS the sample: only inside the analysis VM.
+    #[arg(long, value_name = "SAMPLE")]
+    run: Option<PathBuf>,
+    /// Seconds before a --run sample is killed and the run ends
+    #[arg(long, default_value_t = 120, requires = "run")]
+    timeout: u64,
+    /// An argument for the --run sample (repeat for several)
+    #[arg(long = "sample-arg", value_name = "ARG", requires = "run")]
+    sample_args: Vec<String>,
     /// Write a new link secret to PATH (for `[daemon] secret_file` and the daemon's
     /// fakenet.link.secret-file), and exit
     #[arg(long, value_name = "PATH")]
@@ -72,7 +83,18 @@ async fn main() -> anyhow::Result<()> {
         println!("Network diversion removed");
         return Ok(());
     }
-    let config = Config::load(&args.config)?;
+    let mut config = Config::load(&args.config)?;
+    let sample = match &args.run {
+        Some(path) => Some(fakenet_cli::run::Sample::inspect(path, args.sample_args.clone())?),
+        None => None,
+    };
+    if let Some(sample) = &sample {
+        // Each run gets its own folder: <time>-<name>-<sha256 prefix>
+        config.nucleus.capture_dir = config.nucleus.capture_dir.join(sample.folder_name());
+        if config.explorer.enabled && config.explorer.samples.is_empty() {
+            config.explorer.samples.push(sample.path.clone());
+        }
+    }
     let secret = config.secret()?;
     if secret.is_none() {
         tracing::warn!("No [daemon] secret_file: the link to the daemon is unauthenticated");
@@ -128,7 +150,15 @@ async fn main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("binding the health endpoint to {}", config.nucleus.health))?;
     tracing::info!("health: http://{}/health; CA certificate: {}", config.nucleus.health, ca_path.display());
-    let health_task = tokio::spawn(serve_health(health, link.clone(), Arc::new(server.bound.clone()), secret.clone()));
+    let control = Arc::new(Control {
+        link: link.clone(),
+        listeners: server.bound.clone(),
+        secret: secret.clone(),
+        capture: capture.clone(),
+        explorer: explorer.clone(),
+    });
+    tracing::info!("dashboard: http://{}/dashboard{}", config.nucleus.health, if secret.is_some() { "?token=<the link secret>" } else { "" });
+    let health_task = tokio::spawn(serve_control(health, control));
     let mut background = Vec::new();
     if let Some(explorer) = &explorer {
         if let Some(dir) = config.explorer.coverage_dir.clone() {
@@ -145,7 +175,13 @@ async fn main() -> anyhow::Result<()> {
     }
     capture.log("nucleus_started", json!({ "listeners": server.bound.len(), "daemon": link.health() }));
 
-    shutdown_signal().await;
+    let outcome = match &sample {
+        Some(sample) => Some(fakenet_cli::run::execute(sample, Duration::from_secs(args.timeout), &capture, shutdown_signal()).await),
+        None => {
+            shutdown_signal().await;
+            None
+        }
+    };
     tracing::info!("shutting down");
     health_task.abort();
     drop(server);
@@ -166,6 +202,11 @@ async fn main() -> anyhow::Result<()> {
     match fakenet_cli::write_report(&capture.event_files(), &report) {
         Ok(()) => tracing::info!("Report: {}", report.display()),
         Err(e) => tracing::warn!("Could not write the report: {e:#}"),
+    }
+    if let (Some(sample), Some(outcome)) = (&sample, outcome) {
+        let summary = fakenet_cli::run::summary(sample, &outcome, &capture);
+        std::fs::write(capture.dir().join("run.json"), serde_json::to_string_pretty(&summary)?)?;
+        println!("Run finished ({}): {}", outcome.reason, capture.dir().display());
     }
     Ok(())
 }

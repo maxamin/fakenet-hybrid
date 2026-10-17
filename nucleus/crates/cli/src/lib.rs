@@ -1,6 +1,7 @@
 //! The nucleus's TOML config, its validation, and the loopback-only health endpoint
 
 pub mod import;
+pub mod run;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -302,43 +303,123 @@ pub fn generate_secret(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// GET /health: the nucleus is up. With the link secret as a bearer token (or when no
-/// secret is configured) it also reports the daemon link's state & counters and the
-/// listeners. The nucleus is healthy whether or not the daemon is (it falls back).
-pub async fn serve_health(socket: TcpListener, link: Link, listeners: Arc<Vec<(String, Transport, SocketAddr)>>, secret: Option<String>) {
-    let secret = Arc::new(secret);
+/// What the loopback control server (health & dashboard) reports on
+pub struct Control {
+    pub link: Link,
+    pub listeners: Vec<(String, Transport, SocketAddr)>,
+    /// The link secret: required (as a bearer token, or the dashboard's cookie) for
+    /// anything beyond `/health`'s "ok"; None = no authentication configured
+    pub secret: Option<String>,
+    pub capture: Arc<fakenet_capture::Capture>,
+    pub explorer: Option<Arc<fakenet_explorer::Explorer>>,
+}
+
+const DASHBOARD_HTML: &str = include_str!("dashboard/index.html");
+const DASHBOARD_JS: &str = include_str!("dashboard/dashboard.js");
+const DASHBOARD_CSS: &str = include_str!("dashboard/dashboard.css");
+/// Everything shown comes from the sample: no inline script, nothing from elsewhere
+const DASHBOARD_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
+/// The loopback control server:
+/// - `GET /health`: "ok"; with the secret, the daemon link's state and the listeners
+/// - `GET /dashboard?token=SECRET`: sets a cookie and redirects; `/dashboard` is the live view
+/// - `GET /api/records?after=N`, `GET /api/summary`: the dashboard's data
+pub async fn serve_control(socket: TcpListener, control: Arc<Control>) {
     loop {
         let Ok((stream, _)) = socket.accept().await else { continue };
-        let (link, listeners, secret) = (link.clone(), listeners.clone(), secret.clone());
+        let control = control.clone();
         tokio::spawn(async move {
             let service = hyper::service::service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
-                let (link, listeners, secret) = (link.clone(), listeners.clone(), secret.clone());
-                async move {
-                    let authorized = match secret.as_deref() {
-                        None => true,
-                        Some(secret) => request
-                            .headers()
-                            .get("authorization")
-                            .and_then(|v| v.to_str().ok())
-                            .and_then(|v| v.strip_prefix("Bearer "))
-                            .is_some_and(|token| constant_time_eq(token.as_bytes(), secret.as_bytes())),
-                    };
-                    let (status, body) = if request.uri().path() == "/health" && !authorized {
-                        (StatusCode::OK, json!({ "status": "ok" }))
-                    } else if request.uri().path() == "/health" {
-                        let listeners: Vec<_> = listeners.iter().map(|(n, t, a)| json!({ "name": n, "transport": t, "address": a.to_string() })).collect();
-                        (StatusCode::OK, json!({ "status": "ok", "daemon": link.health(), "listeners": listeners }))
-                    } else {
-                        (StatusCode::NOT_FOUND, json!({ "error": "not found" }))
-                    };
-                    Response::builder()
-                        .status(status)
-                        .header("content-type", "application/json")
-                        .body(Full::new(Bytes::from(body.to_string())))
-                }
+                let control = control.clone();
+                async move { Ok::<_, std::convert::Infallible>(control_response(&control, &request)) }
             });
             let _ = hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(stream), service).await;
         });
+    }
+}
+
+fn query_param<'a>(query: &'a str, name: &str) -> Option<&'a str> {
+    query.split('&').find_map(|pair| pair.split_once('=').filter(|(k, _)| *k == name).map(|(_, v)| v))
+}
+
+fn authorized(control: &Control, request: &hyper::Request<hyper::body::Incoming>) -> bool {
+    let Some(secret) = control.secret.as_deref() else { return true };
+    let headers = request.headers();
+    let bearer = headers.get("authorization").and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "));
+    let cookie = headers
+        .get_all("cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .find_map(|c| c.trim().strip_prefix("fakenet_token="));
+    [bearer, cookie].into_iter().flatten().any(|token| constant_time_eq(token.as_bytes(), secret.as_bytes()))
+}
+
+fn control_response(control: &Control, request: &hyper::Request<hyper::body::Incoming>) -> Response<Full<Bytes>> {
+    let path = request.uri().path();
+    let query = request.uri().query().unwrap_or("");
+    let authorized = authorized(control, request);
+    let respond = |status: StatusCode, content_type: &str, body: String| {
+        Response::builder()
+            .status(status)
+            .header("content-type", content_type)
+            .header("cache-control", "no-store")
+            .header("x-content-type-options", "nosniff")
+            .header("referrer-policy", "no-referrer")
+            .header("content-security-policy", DASHBOARD_CSP)
+            .body(Full::new(Bytes::from(body)))
+            .expect("valid response")
+    };
+    let json_response = |value: serde_json::Value| respond(StatusCode::OK, "application/json", value.to_string());
+    match path {
+        "/health" if !authorized => json_response(json!({ "status": "ok" })),
+        "/health" => {
+            let listeners: Vec<_> = control.listeners.iter().map(|(n, t, a)| json!({ "name": n, "transport": t, "address": a.to_string() })).collect();
+            json_response(json!({ "status": "ok", "daemon": control.link.health(), "listeners": listeners }))
+        }
+        "/dashboard" => {
+            // Opening /dashboard?token=SECRET sets the cookie, then drops the token from the URL
+            if let (Some(token), Some(secret)) = (query_param(query, "token"), control.secret.as_deref()) {
+                if constant_time_eq(token.as_bytes(), secret.as_bytes()) {
+                    let mut response = respond(StatusCode::SEE_OTHER, "text/plain", String::new());
+                    response.headers_mut().insert("location", hyper::header::HeaderValue::from_static("/dashboard"));
+                    if let Ok(cookie) = hyper::header::HeaderValue::from_str(&format!("fakenet_token={secret}; HttpOnly; SameSite=Strict; Path=/")) {
+                        response.headers_mut().insert("set-cookie", cookie);
+                    }
+                    return response;
+                }
+            }
+            if authorized {
+                respond(StatusCode::OK, "text/html; charset=utf-8", DASHBOARD_HTML.to_string())
+            } else {
+                respond(StatusCode::UNAUTHORIZED, "text/plain; charset=utf-8", "Open /dashboard?token=<the link secret> (the [daemon] secret_file's contents)\n".to_string())
+            }
+        }
+        "/dashboard.js" => respond(StatusCode::OK, "text/javascript; charset=utf-8", DASHBOARD_JS.to_string()),
+        "/dashboard.css" => respond(StatusCode::OK, "text/css; charset=utf-8", DASHBOARD_CSS.to_string()),
+        "/api/records" | "/api/summary" if !authorized => respond(StatusCode::UNAUTHORIZED, "application/json", r#"{"error":"unauthorized"}"#.into()),
+        "/api/records" => {
+            let after = query_param(query, "after").and_then(|v| v.parse().ok()).unwrap_or(0);
+            let limit = query_param(query, "limit").and_then(|v| v.parse().ok()).unwrap_or(1000usize).min(5000);
+            let (records, latest) = control.capture.recent(after, limit);
+            let records: Vec<_> = records.into_iter().map(|(seq, record)| json!({ "seq": seq, "record": record })).collect();
+            json_response(json!({ "latest": latest, "records": records }))
+        }
+        "/api/summary" => {
+            let explorer = control.explorer.as_ref().map(|e| {
+                let map = e.map();
+                let templates: Vec<_> = map["templates"].as_array().map(|t| t.iter().filter(|t| t["reward"].as_f64().unwrap_or(0.0) > 0.0).take(8).cloned().collect()).unwrap_or_default();
+                json!({
+                    "proposals": map["proposals"], "behaviors": map["behaviors"],
+                    "functions_reached": map["functions"]["reached"].as_array().map(Vec::len).unwrap_or(0),
+                    "functions_known": map["functions"]["known"],
+                    "templates": templates.iter().map(|t| json!({ "template": t["template"], "reward": t["reward"], "functions": t["functions"] })).collect::<Vec<_>>(),
+                })
+            });
+            let listeners: Vec<_> = control.listeners.iter().map(|(n, t, a)| json!({ "name": n, "transport": t, "address": a.to_string() })).collect();
+            json_response(json!({ "daemon": control.link.health(), "listeners": listeners, "explorer": explorer }))
+        }
+        _ => respond(StatusCode::NOT_FOUND, "application/json", r#"{"error":"not found"}"#.into()),
     }
 }
 

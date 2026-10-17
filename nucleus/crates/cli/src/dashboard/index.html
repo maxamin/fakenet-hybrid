@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FakeNet live</title>
+<link rel="stylesheet" href="/dashboard.css">
+<script src="/dashboard.js" defer></script>
+</head>
+<body>
+<header>
+  <h1><span class="brand">FakeNet</span> live</h1>
+  <div id="link" class="pill">link: …</div>
+  <div id="counters" class="muted"></div>
+</header>
+<main>
+  <section class="grid">
+    <article><h2>DNS names</h2><ul id="dns"></ul></article>
+    <article><h2>HTTP requests</h2><ul id="http"></ul></article>
+    <article><h2>Credentials</h2><ul id="credentials"></ul></article>
+    <article><h2>Protocols</h2><ul id="protocols"></ul></article>
+    <article><h2>Explorer</h2><div id="explorer" class="muted">off</div><ul id="explorer-templates"></ul></article>
+    <article><h2>Listeners</h2><ul id="listeners"></ul></article>
+  </section>
+  <section>
+    <div class="toolbar">
+      <h2>Records</h2>
+      <label>kind <select id="kind"><option value="">all</option></select></label>
+      <label>search <input id="search" type="search" placeholder="text in a record"></label>
+      <label><input id="pause" type="checkbox"> pause</label>
+    </div>
+    <table>
+      <thead><tr><th>time</th><th>kind</th><th>protocol</th><th>from → to</th><th>process</th><th>details</th></tr></thead>
+      <tbody id="records"></tbody>
+    </table>
+  </section>
+</main>
+</body>
+</html>
