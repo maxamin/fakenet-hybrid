@@ -36,13 +36,19 @@ per-listener process/host white/blacklists, typed default files, and its `defaul
 ```
 schema/fakenet-link-v1.schema.json   Event/Action message schema (shared by both sides)
 nucleus/                             Rust workspace
-  crates/schema  sniffer  link  capture  listeners  diverter  cli
+  crates/schema  sniffer  link  capture  listeners  diverter  cli  explorer
+  crates/explorer/templates/         the explorer's response templates (default.toml)
+  fuzz/                              cargo-fuzz targets for every parser (own workspace)
+  examples/explorer-demo/            a harmless instrumented bot: the explorer end to end
+  scripts/rea-hints.sh               REA (Reverse Engineer Anything) analysis -> explorer hints
   config/fakenet.toml                sample config (relative paths: from this file's folder)
   config/default-files/              FakeNet-NG's typed default files (served for missing files)
   scripts/test-linux-diversion.sh    diverter end-to-end test (private network namespace)
 daemon/                              Java 21 / Camel 4.18 LTS (Maven)
   routes/link.yaml                   transport: WebSocket, POST /decide, Wire Tap
   routes/decisions.yaml              the analyst's rules (hot-reloaded)
+  routes/siem.yaml                   SIEM outputs: ECS, Splunk HEC, syslog CEF (off until configured)
+  rules-library/                     ready-made rules: staged HTTP C2, DNS TXT tasking, IRC, kill switch
   src/main/java/lab/fakenet/daemon/  entry point, link auth, processors, automatic warm-up
 deploy/                              systemd units & installers (Linux), scheduled tasks (Windows)
 scripts/package.sh                   release package
@@ -56,6 +62,7 @@ upstream/                            reference only, git-ignored: the FakeNet-NG
 | `http://127.0.0.1:8091/decide` | daemon | Secondary channel (one POST per Event) |
 | `http://127.0.0.1:8092/observe/health` | daemon | Camel health |
 | `http://127.0.0.1:8099/health` | nucleus | Nucleus health, link state, fallback counters |
+| `http://127.0.0.1:8099/dashboard` | nucleus | Live dashboard (open `/dashboard?token=<link secret>` once) |
 
 ## Requirements
 
@@ -166,6 +173,96 @@ not saved, so existing evidence is never deleted.
 
 `daemon/audit/events-YYYYMMDD.jsonl`: the Wire Tap's copy of every event with its action.
 
+### Live dashboard
+
+`http://127.0.0.1:8099/dashboard?token=<contents of link.secret>` sets an HttpOnly cookie
+and opens a live view: sessions, DNS names, URLs, credentials, files, fallbacks, daemon
+state and, when it's on, the explorer's progress. It's served on the health address
+(loopback only) and needs the secret, like `/health`'s details.
+
+### One run per sample
+
+```sh
+sudo ./target/release/fakenet-nucleus -c my.toml --run ./sample.exe --timeout 300 --sample-arg -q
+```
+
+starts everything, runs the sample, and stops when it exits (plus 5 s for its last
+connections) or at `--timeout`. Each run gets its own folder under `capture_dir`
+(`<time>-<name>-<sha256 prefix>/`) with the usual outputs and `run.json`: the sample's SHA-256 and MD5,
+arguments, exit status and duration. **This executes the sample**: only inside the analysis VM.
+
+### Realism
+
+Some samples check whether they're in a sandbox before doing anything. The defaults help
+them conclude they're not:
+
+- TLS certificates look issued 30–200 days ago, with random serials.
+- `[defaults.http] connectivity_checks` answers Windows NCSI (`connecttest.txt`, `ncsi.txt`
+  and its DNS name), Android/Chrome `generate_204`, Apple's and Firefox's captive-portal
+  checks exactly as the real services do. `server_header = "auto"` picks a plausible
+  `Server` per host.
+- `[defaults.dns] per_domain = true` gives each name its own stable address from `pool`
+  (198.18.0.0/15) with matching PTR answers, instead of one address for everything.
+  `nxdomain_random = true` answers NXDOMAIN for random-looking (DGA) names, as the Internet
+  would.
+- `[defaults] latency_ms = [20, 120]` adds a random delay to each answer.
+
+## Exploring a sample
+
+Defaults show a sample's first move. Many samples only reveal their capabilities when the
+C2 answers with something they understand: a task they parse, a command name they compare
+against. The **explorer** finds such answers automatically.
+
+When the daemon doesn't decide a request, the explorer (with probability `rate`) answers
+with one of ~60 protocol templates (HTTP JSON tasks, key-value bodies, redirects, PE
+downloads, DNS TXT/CNAME/A answers, IRC PRIVMSG, raw TCP, SMTP/FTP replies...) and fills
+its slots with *hints*:
+
+- strings from the sample's binary (`samples`);
+- **REA's analysis** (`rea`): function names, strings and imports from Ghidra, via
+  [Reverse Engineer Anything](https://github.com/morluto/rea). Words from the sample's own
+  function names (`cmd_download` -> `download`) are favoured, since command handlers are
+  usually named after their commands;
+- what the sample itself sent (echoed, mutated, or its parameters).
+
+Each answer is scored by what follows within `window_ms`: new kinds of behaviour (new
+protocols, hosts, paths, credentials, files...) and, with a coverage tracer, newly reached
+functions. A bandit (UCB1 per kind of request) learns which templates pay off, and the
+hint words that paid off are reused more. Everything is logged (`explored` events, route
+`explorer:<template>`) and summarised in `capture/explorer-map.json` and the report's
+Explorer section: which answer led to which behaviour and which functions.
+
+Typical use:
+
+```sh
+nucleus/scripts/rea-hints.sh sample.exe rea.jsonl ghidra   # REA + Ghidra: functions, strings, imports
+```
+
+then in the config:
+
+```toml
+[explorer]
+enabled = true
+samples = ["sample.exe"]
+rea = ["rea.jsonl"]
+coverage_dir = "coverage"     # optional: a tracer's output (see below)
+module = "sample.exe"
+image_base = "0x400000"
+```
+
+Coverage makes the map precise: a tracer such as DynamoRIO's drcov
+(`drrun -t drcov -logdir coverage -- sample.exe`) or Frida writes to `coverage_dir`;
+the explorer reads drcov logs and JSONL lines (`{"pid":..,"time":..,"functions":[..]}` or
+`"addresses"`) and maps addresses to REA's functions. The explorer warns if REA analysed a
+different build (SHA-256 mismatch) than `samples`.
+
+`nucleus/examples/explorer-demo/run-demo.sh` shows it end to end on a harmless instrumented
+bot (localhost, high ports, no diversion): with defaults it reaches none of the bot's five
+command handlers; with the explorer, four, each attributed to the answer that triggered it.
+
+The explorer only answers what the analyst's rules leave undecided, and it changes answers,
+nothing else: it never sends traffic of its own.
+
 ## Writing rules
 
 Edit `daemon/routes/decisions.yaml` and save it. Camel reloads only that file, re-runs the
@@ -187,8 +284,27 @@ Two Camel behaviours to know:
   `decisions.yaml` exercises each rule before the link opens; add a sample there for each
   new scripted rule.
 
-Fan-out: add sinks to the `audit` route in `link.yaml` (for example a SIEM over HTTP, Kafka
-or syslog) with their stock Camel component and its Maven dependency.
+Multi-step conversations: the `state` bean keeps per-client state (by process, else by
+source address; header `FakenetActor`) for an hour, so a rule can register a bot on its
+first check-in and hand out tasks on later ones. See the `/checkin` rule in
+`decisions.yaml`.
+
+**Rules library:** `daemon/rules-library/` has ready-made rules (staged HTTP C2, DNS TXT
+tasking, IRC botnet channel, kill-switch domains); see its README.
+
+**Record & replay:**
+- `fakenet-nucleus --rules-from-har c2.har -o routes/recorded.yaml` turns a recorded
+  exchange (a HAR from a browser, mitmproxy or HTTP Toolkit) into a rule that answers each
+  recorded request with its recorded response.
+- `fakenet-nucleus -c my.toml --replay capture/events.jsonl` sends a capture's events to the
+  running daemon and prints what the current rules decide for each, without any traffic:
+  a regression test for rule changes.
+
+**SIEM outputs:** every event and its decision can also go out as Elastic Common Schema
+JSON (HTTP to Elasticsearch, any webhook, a file, Kafka), to Splunk's HTTP Event
+Collector, or as syslog CEF. They're off until configured; see the header of
+`daemon/routes/siem.yaml` for the `fakenet.siem.*` properties. Other sinks: add them to the
+`audit` route in `link.yaml` with their stock Camel component.
 
 ## Tests
 
@@ -198,6 +314,8 @@ or syslog) with their stock Camel component and its Maven dependency.
 | Daemon: link authentication (HMAC vectors shared with the nucleus), event/action processing, the shipped rules | `cd daemon && mvn test` |
 | Rust–Camel link against the real daemon: authenticated handshake, both channels, scripted replies, hot reload, Wire Tap, **fallback while the daemon is stopped**, reconnect after restart | `cd daemon && mvn package`, then `cd nucleus && cargo test -p fakenet-cli --test camel_link -- --ignored` (uses `JAVA_HOME` or `java` on PATH) |
 | Real clients (curl, dig, OpenSSH, redis-cli, swaks, logger, nc, Python): 42 checks | `cd nucleus && cargo build && scripts/interop.sh` |
+| Fuzzing: every protocol handler, parser, packet decoder, link message, the report and the INI importer face hostile input | `cd nucleus/fuzz && ./run-all.sh 300` (cargo-fuzz; nightly, or `RUSTC_BOOTSTRAP=1` as the script does). Crashes land in `fuzz/artifacts/`; `seeds/` holds the starting corpus |
+| The explorer on a real binary with REA's Ghidra analysis | `nucleus/examples/explorer-demo/run-demo.sh` (needs gcc, and REA with Ghidra unless you pass REA JSON) |
 | Linux diversion & wire capture end to end, in a throwaway network namespace (never touches the host's iptables) | `nucleus/scripts/test-linux-diversion.sh` (needs a kernel with the NAT modules and unprivileged user namespaces; or run the test binary with `sudo unshare --net`, as CI does) |
 
 CI (`.github/workflows/ci.yml`) runs all of these on Linux, including the diversion test as

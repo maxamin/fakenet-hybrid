@@ -46,6 +46,12 @@ struct Args {
     /// An argument for the --run sample (repeat for several)
     #[arg(long = "sample-arg", value_name = "ARG", requires = "run")]
     sample_args: Vec<String>,
+    /// Generate a Camel rule (YAML) replaying a HAR recording (to --output, default stdout)
+    #[arg(long, value_name = "HAR")]
+    rules_from_har: Option<PathBuf>,
+    /// Send a capture's events to the daemon and print what the current rules decide
+    #[arg(long, value_name = "EVENTS")]
+    replay: Option<PathBuf>,
     /// Write a new link secret to PATH (for `[daemon] secret_file` and the daemon's
     /// fakenet.link.secret-file), and exit
     #[arg(long, value_name = "PATH")]
@@ -64,6 +70,27 @@ async fn main() -> anyhow::Result<()> {
         match &args.output {
             Some(path) => std::fs::write(path, toml).with_context(|| format!("writing {}", path.display()))?,
             None => print!("{toml}"),
+        }
+        return Ok(());
+    }
+    if let Some(har) = &args.rules_from_har {
+        let text = std::fs::read_to_string(har).with_context(|| format!("reading {}", har.display()))?;
+        let value: serde_json::Value = serde_json::from_str(&text).with_context(|| format!("parsing {}", har.display()))?;
+        let yaml = fakenet_cli::har::rules(&value, &har.display().to_string())?;
+        match &args.output {
+            Some(path) => std::fs::write(path, yaml).with_context(|| format!("writing {}", path.display()))?,
+            None => print!("{yaml}"),
+        }
+        return Ok(());
+    }
+    if let Some(events) = &args.replay {
+        let config = Config::load(&args.config)?;
+        let link = Link::start(config.link(config.secret()?.as_deref()));
+        tokio::time::sleep(Duration::from_millis(500)).await; // Let the WebSocket connect
+        let text = std::fs::read_to_string(events).with_context(|| format!("reading {}", events.display()))?;
+        let records = text.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok());
+        for line in fakenet_cli::replay::replay(&link, records).await {
+            println!("{line}");
         }
         return Ok(());
     }

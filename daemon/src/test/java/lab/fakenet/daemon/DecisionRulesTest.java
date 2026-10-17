@@ -26,6 +26,7 @@ class DecisionRulesTest {
     void start() throws Exception {
         context = new DefaultCamelContext();
         context.getRegistry().bind("warmUp", new WarmUp());
+        context.getRegistry().bind("state", new SessionState());
         context.getPropertiesComponent().addInitialProperty("fakenet.link.host", "127.0.0.1");
         Path rules = Path.of("routes", "decisions.yaml").toAbsolutePath();
         PluginHelper.getRoutesLoader(context).loadRoutes(ResourceHelper.resolveResource(context, "file:" + rules));
@@ -59,6 +60,16 @@ class DecisionRulesTest {
         assertTrue(update.getMessage().getBody(String.class).endsWith("\"url\":\"http://cdn.update.example.com/patch.exe\"}"));
         Exchange other = decide("http", Map.of(PATH, "/", HOST, "benign.example"));
         assertNull(other.getMessage().getBody()); // The nucleus's default
+    }
+
+    @Test
+    void holdsAStagedConversationPerSample() {
+        Map<String, Object> checkin = Map.of(PATH, "/checkin", HOST, "c2.example", ACTOR, "pid:77");
+        String first = decide("http", checkin).getMessage().getBody(String.class);
+        assertTrue(first.contains("registered BOT-"), first);
+        String second = decide("http", checkin).getMessage().getBody(String.class);
+        assertTrue(second.contains("task BOT-") && second.endsWith("sysinfo"), second);
+        assertTrue(decide("http", Map.of(PATH, "/checkin", HOST, "c2.example", ACTOR, "pid:78")).getMessage().getBody(String.class).contains("registered"));
     }
 
     @Test

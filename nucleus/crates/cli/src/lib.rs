@@ -1,6 +1,8 @@
 //! The nucleus's TOML config, its validation, and the loopback-only health endpoint
 
+pub mod har;
 pub mod import;
+pub mod replay;
 pub mod run;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};

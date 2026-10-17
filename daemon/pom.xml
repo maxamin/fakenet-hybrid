@@ -54,6 +54,10 @@
         <!-- Warms up the rules when they (re)load, then starts the link's channels -->
         <dependency><groupId>org.apache.camel</groupId><artifactId>camel-timer</artifactId></dependency>
         <dependency><groupId>org.apache.camel</groupId><artifactId>camel-controlbus</artifactId></dependency>
+        <!-- SIEM outputs (siem.yaml): HTTP (Elastic, Splunk HEC, webhooks) and syslog -->
+        <dependency><groupId>org.apache.camel</groupId><artifactId>camel-http</artifactId></dependency>
+        <dependency><groupId>org.apache.camel</groupId><artifactId>camel-netty</artifactId></dependency>
+        <dependency><groupId>org.apache.camel</groupId><artifactId>camel-bean</artifactId></dependency>
 
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
@@ -61,6 +65,11 @@
             <version>${log4j.version}</version>
         </dependency>
 
+        <dependency>
+            <groupId>org.apache.camel</groupId>
+            <artifactId>camel-mock</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>

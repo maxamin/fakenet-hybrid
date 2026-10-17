@@ -1,0 +1,22 @@
+# DNS tasking, as DNS tunnels do it: TXT queries get the next task, base64-encoded; A queries
+# answer 10.0.0.1 ("nothing to do") or 10.0.0.2 ("a task is waiting").
+- route:
+    id: library-dns-txt-tasking
+    from:
+      uri: direct:library-dns-txt-tasking
+      steps:
+        - setHeader:
+            name: FakenetRoute
+            constant: library-dns-txt-tasking
+        - setBody:
+            groovy: |
+              def state = camelContext.registry.lookupByName('state')
+              def actor = request.headers.FakenetActor
+              def tasks = camelContext.propertiesComponent.resolveProperty('fakenet.library.tasks').orElse('sysinfo,screenshot,sleep 300').split(',')*.trim()
+              if (request.headers.FakenetQtype == 'TXT') {
+                def count = state.increment(actor, 'dns_tasks')
+                def task = tasks[((count - 1) % tasks.size()) as int]
+                return "TXT " + task.bytes.encodeBase64().toString()
+              }
+              def given = state.get(actor, 'dns_tasks', 0L) as long
+              "A 10.0.0." + (given < tasks.size() ? 2 : 1)

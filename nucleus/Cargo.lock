@@ -458,6 +458,7 @@ name = "fakenet-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "clap",
  "fakenet-capture",
  "fakenet-diverter",

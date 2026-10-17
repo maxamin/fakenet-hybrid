@@ -40,11 +40,15 @@ answer_ping = true               # answer ICMP echo to any address
 # ipv6 = true
 
 # Built-in default responses: used whenever the daemon doesn't decide in time
+[defaults]
+latency_ms = [0, 0]              # random delay [min, max] before each answer; e.g. [20, 120]: instant answers are a sandbox tell
+
 [defaults.http]
 webroot = "default-files"        # served by path; missing files get a default of their type (FakeNet-NG's)
 server_header = "Microsoft-IIS/10.0"
 max_body_bytes = 16777216
 save_bodies = true
+connectivity_checks = true       # answer Windows NCSI, Android/Chrome generate_204, Apple & Firefox captive-portal probes as a real network would
 
 [defaults.dns]
 a = "192.0.2.123"                # point this at the nucleus's address on the analysis network
@@ -52,6 +56,9 @@ a = "192.0.2.123"                # point this at the nucleus's address on the an
 mx = "mail.fakenet.local"
 txt = "FAKENET"
 ttl = 60
+per_domain = false               # true: each name gets its own stable address from `pool` (and a matching PTR)
+pool = "198.18.0.0/15"
+nxdomain_random = false          # true: NXDOMAIN for random-looking (DGA) names, as the real Internet does
 
 [defaults.raw]
 mode = "echo"                    # or "static"
@@ -195,3 +202,21 @@ name = "RawUDP"                  # ...and every other UDP port here
 protocol = "auto"
 transport = "udp"
 port = 1338
+
+# The response explorer (off by default): when the daemon doesn't decide, answer with
+# protocol templates filled from the sample's strings and REA's analysis, and learn which
+# answers unlock new behaviour or new functions. Writes capture/explorer-map.json.
+# See README "Exploring a sample".
+[explorer]
+enabled = false
+# rate = 0.8                     # share of undecided requests that get an explored answer
+# seed = 24301                   # for reproducible runs
+# window_ms = 3000               # new behaviour within this long is credited to the answer
+# coverage_weight = 5.0          # reward per newly reached function
+# samples = ["sample.exe"]       # strings become hints (and the SHA-256 is checked against REA's)
+# rea = ["rea.jsonl"]            # scripts/rea-hints.sh output: procedures, strings, imports
+# coverage_dir = "coverage"      # a tracer writes drcov *.log or JSONL here
+# module = "sample.exe"          # the sample's module name in drcov
+# image_base = "0x400000"        # REA's image base, for rebasing drcov offsets
+# templates = []                 # extra template files (format: crates/explorer/templates/default.toml)
+# protocols = []                 # limit exploration (empty: every protocol with templates)

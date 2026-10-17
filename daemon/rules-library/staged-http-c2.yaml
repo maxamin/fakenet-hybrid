@@ -1,0 +1,28 @@
+# A beaconing HTTP C2: the first request from a sample registers it, later ones get the next
+# task from fakenet.library.tasks (comma-separated), and POSTs are accepted as results.
+- route:
+    id: library-staged-http-c2
+    from:
+      uri: direct:library-staged-http-c2
+      steps:
+        - setHeader:
+            name: FakenetRoute
+            constant: library-staged-http-c2
+        - setBody:
+            groovy: |
+              def state = camelContext.registry.lookupByName('state')
+              def actor = request.headers.FakenetActor
+              if (request.headers.FakenetMethod == 'POST') {
+                state.increment(actor, 'results')
+                return "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nok"
+              }
+              def count = state.increment(actor, 'beacons')
+              if (count == 1) {
+                def id = UUID.nameUUIDFromBytes(actor.bytes).toString()
+                state.put(actor, 'id', id)
+                return "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n" + lab.fakenet.daemon.LinkSchema.JSON.writeValueAsString([status: 'registered', id: id, interval: 60])
+              }
+              def tasks = camelContext.propertiesComponent.resolveProperty('fakenet.library.tasks').orElse('sysinfo,screenshot,sleep 300').split(',')*.trim()
+              def task = tasks[((count - 2) % tasks.size()) as int]
+              def reply = lab.fakenet.daemon.LinkSchema.JSON.writeValueAsString([id: state.get(actor, 'id'), task: task, seq: count - 1])
+              "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n" + reply

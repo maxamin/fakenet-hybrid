@@ -1,0 +1,92 @@
+# SIEM & pipeline outputs, fed by the audit Wire Tap (link.yaml): every event with its
+# decision, as Elastic Common Schema (ECS) JSON. Off unless an output is configured: set
+# these properties (application.properties, -D, or CAMEL_* environment variables) to
+# comma-separated stock Camel endpoint URIs:
+#   fakenet.siem.ecs-uris     raw ECS JSON documents. Elastic: an http endpoint on
+#                             .../<index>/_doc; also any webhook, file:..., kafka:... (Kafka
+#                             needs the camel-kafka dependency added to pom.xml)
+#   fakenet.siem.splunk-uris  Splunk HTTP Event Collector (http.../services/collector/event),
+#                             with fakenet.siem.splunk-token
+#   fakenet.siem.syslog-uris  syslog lines in CEF, e.g. netty:udp://siem:514?textline=true&sync=false
+- route:
+    id: siem
+    from:
+      uri: direct:siem
+      steps:
+        - setProperty:
+            name: FakenetEcs
+            groovy: |
+              def json = lab.fakenet.daemon.LinkSchema.JSON
+              def record = json.readValue(request.getBody(String), Map)
+              def event = record.event ?: [:]
+              def action = record.action ?: [:]
+              def meta = event.meta ?: [:]
+              def endpoint = { String address ->
+                if (!address) return null
+                int colon = address.lastIndexOf(':')
+                def ip = address.substring(0, colon).replaceAll(/^\[|\]$/, '')
+                [ip: ip, port: address.substring(colon + 1) as Integer]
+              }
+              def ecs = [
+                '@timestamp': event.timestamp,
+                event      : [kind: 'event', category: ['network'], type: ['connection'], dataset: 'fakenet.link',
+                              action: action.route ?: 'default', outcome: action.response ? 'scripted' : 'default'],
+                source     : endpoint(event.src),
+                destination: endpoint(event.dst),
+                network    : [protocol: event.protocol, transport: event.transport],
+                fakenet    : [session_id: event.session_id, request_id: event.request_id, tls: event.tls,
+                              close: action.close, response_bytes: action.response ? java.util.Base64.decoder.decode(action.response).length : 0],
+              ]
+              if (event.process) ecs.process = [pid: event.process.pid, name: event.process.name, executable: event.process.exe]
+              if (event.protocol == 'http') {
+                ecs.http = [request: [method: meta.method]]
+                ecs.url = [path: meta.path, domain: meta.host]
+              }
+              if (event.protocol == 'dns') ecs.dns = [question: [name: meta.qname, type: meta.qtype]]
+              json.writeValueAsString(ecs)
+        - setProperty:
+            name: FakenetCef
+            groovy: |
+              def json = lab.fakenet.daemon.LinkSchema.JSON
+              def ecs = json.readValue(exchange.getProperty('FakenetEcs', String), Map)
+              def esc = { v -> String.valueOf(v ?: '').replace('\\', '\\\\').replace('=', '\\=').replace('\n', ' ') }
+              "CEF:0|FakeNet|fakenet-hybrid|1|${esc(ecs.network.protocol)}|${esc(ecs.event.action)}|3|" +
+                "src=${esc(ecs.source?.ip)} spt=${esc(ecs.source?.port)} dst=${esc(ecs.destination?.ip)} dpt=${esc(ecs.destination?.port)} " +
+                "app=${esc(ecs.network.protocol)} sproc=${esc(ecs.process?.name)} cs1Label=session cs1=${esc(ecs.fakenet.session_id)}"
+        - setBody:
+            simple: "${exchangeProperty.FakenetEcs}"
+        - removeHeaders:
+            pattern: "*"
+        - setHeader:
+            name: Content-Type
+            constant: application/json
+        - filter:
+            simple: "'{{fakenet.siem.ecs-uris:}}' != ''"
+            steps:
+              - recipientList:
+                  constant: "{{fakenet.siem.ecs-uris:}}"
+                  parallelProcessing: true
+                  stopOnException: false
+        - filter:
+            simple: "'{{fakenet.siem.splunk-uris:}}' != ''"
+            steps:
+              - setBody:
+                  simple: '{"sourcetype":"fakenet:ecs","event":${exchangeProperty.FakenetEcs}}'
+              - setHeader:
+                  name: Authorization
+                  simple: "Splunk {{fakenet.siem.splunk-token:}}"
+              - recipientList:
+                  constant: "{{fakenet.siem.splunk-uris:}}"
+                  parallelProcessing: true
+                  stopOnException: false
+        - filter:
+            simple: "'{{fakenet.siem.syslog-uris:}}' != ''"
+            steps:
+              - removeHeaders:
+                  pattern: "*"
+              - setBody:
+                  simple: "${exchangeProperty.FakenetCef}"
+              - recipientList:
+                  constant: "{{fakenet.siem.syslog-uris:}}"
+                  parallelProcessing: true
+                  stopOnException: false

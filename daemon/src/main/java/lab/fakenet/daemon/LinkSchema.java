@@ -30,6 +30,8 @@ public final class LinkSchema {
     public static final String DPORT = "FakenetDport";
     public static final String PROCESS = "FakenetProcess";
     public static final String PID = "FakenetPid";
+    /** Who sent the event: "pid:N" when the process is known, else "ip:ADDRESS" */
+    public static final String ACTOR = "FakenetActor";
     public static final String PAYLOAD = "FakenetPayload";
     public static final String TEXT = "FakenetText";
     public static final String META = "FakenetMeta";

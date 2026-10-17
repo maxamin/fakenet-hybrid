@@ -102,8 +102,7 @@
         - wireTap:
             uri: direct:audit
 
-# Wire Tap target: fan out to the audit file and the log. Add more sinks here (SIEM over
-# HTTP, Kafka, syslog...) with their stock Camel components.
+# Wire Tap target: fan out to the audit file, the log and the SIEM outputs (siem.yaml)
 - route:
     id: audit
     from:
@@ -122,3 +121,5 @@
               - log:
                   loggingLevel: INFO
                   message: "${header.FakenetProtocol} ${header.FakenetSrc} -> ${header.FakenetDst} [${header.FakenetSessionId}] => ${header.FakenetRoute}"
+              # SIEM & pipelines (siem.yaml): off unless fakenet.siem.* outputs are set
+              - to: direct:siem

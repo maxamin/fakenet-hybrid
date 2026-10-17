@@ -1,0 +1,19 @@
+# Kill-switch domains (fakenet.library.kill-switch-domains, comma-separated). By default they
+# resolve, as a live kill switch would, so the sample stops: to watch what it does when the
+# switch is NOT set, run with fakenet.library.kill-switch-mode=nxdomain.
+- route:
+    id: library-kill-switch
+    from:
+      uri: direct:library-kill-switch
+      steps:
+        - filter:
+            groovy: |
+              def domains = camelContext.propertiesComponent.resolveProperty('fakenet.library.kill-switch-domains').orElse('').split(',')*.trim().findAll { it }
+              domains.any { request.headers.FakenetQname?.equalsIgnoreCase(it) }
+            steps:
+              - setHeader:
+                  name: FakenetRoute
+                  constant: library-kill-switch
+              - setBody:
+                  groovy: |
+                    camelContext.propertiesComponent.resolveProperty('fakenet.library.kill-switch-mode').orElse('resolve') == 'nxdomain' ? 'NXDOMAIN' : 'A 10.0.0.250'

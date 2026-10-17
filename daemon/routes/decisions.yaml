@@ -7,6 +7,9 @@
 # FakenetProcess, FakenetPid, FakenetPayload (bytes), FakenetText (payload as UTF-8),
 # FakenetMeta (map), and for convenience FakenetMethod, FakenetPath, FakenetHost (HTTP) and
 # FakenetQname, FakenetQtype (DNS).
+# FakenetActor ("pid:N", or "ip:ADDRESS") identifies the sample across events & protocols:
+# use it with the `state` bean to hold multi-step conversations (see the check-in rule).
+# Ready-made rules: ../rules-library (add one `- to: direct:library-...` line to use one).
 # Headers a rule may set: FakenetClose (true closes the connection after replying),
 # FakenetDelayMs (wait before replying; max 60000), FakenetRoute (name shown in the logs).
 #
@@ -64,6 +67,25 @@
                         def bot = request.headers.FakenetSessionId
                         def task = "id=${bot};task=sleep;interval=3600"
                         "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nX-Powered-By: PHP/7.4.3\r\n\r\n${task}"
+              # Staged C2 (Groovy + state): the first check-in registers the bot, later ones
+              # get tasks, in order; the conversation survives reconnections
+              - simple: "${header.FakenetPath} startsWith '/checkin'"
+                steps:
+                  - setHeader:
+                      name: FakenetRoute
+                      constant: staged-checkin
+                  - setBody:
+                      groovy: |
+                        def state = camelContext.registry.lookupByName('state')
+                        def actor = request.headers.FakenetActor
+                        def count = state.increment(actor, 'checkins')
+                        if (count == 1) {
+                          state.put(actor, 'bot_id', 'BOT-' + Integer.toHexString(actor.hashCode() & 0xffff))
+                          return "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nregistered ${state.get(actor, 'bot_id')}"
+                        }
+                        def tasks = ['sysinfo', 'download http://update.example.com/stage2.bin', 'sleep 600']
+                        def task = tasks[((count - 2) % tasks.size()) as int]
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\ntask ${state.get(actor, 'bot_id')} ${task}"
               # Templated reply (Simple): a fake update check pointing at a fake download.
               # Downloads of .exe files then get the nucleus's default executable.
               - simple: "${header.FakenetHost} endsWith 'update.example.com'"

@@ -1,0 +1,21 @@
+# An IRC C2 channel: when the bot joins, the topic and a PRIVMSG from the "operator" carry a
+# command (fakenet.library.irc-command); everything else keeps the nucleus's defaults.
+- route:
+    id: library-irc-botnet
+    from:
+      uri: direct:library-irc-botnet
+      steps:
+        - filter:
+            simple: "${header.FakenetMeta[command]} == 'JOIN'"
+            steps:
+              - setHeader:
+                  name: FakenetRoute
+                  constant: library-irc-botnet
+              - setBody:
+                  groovy: |
+                    def channel = (request.headers.FakenetMeta?.params ?: ['#c2'])[0]
+                    def nick = request.headers.FakenetMeta?.nick ?: 'bot'
+                    def command = camelContext.propertiesComponent.resolveProperty('fakenet.library.irc-command').orElse('!sysinfo')
+                    ":${nick}!bot@fakenet JOIN ${channel}\r\n" +
+                    ":irc.fakenet.local 332 ${nick} ${channel} :${command}\r\n" +
+                    ":operator!op@c2 PRIVMSG ${channel} :${command}\r\n"

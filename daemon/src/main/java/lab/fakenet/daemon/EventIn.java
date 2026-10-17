@@ -78,9 +78,12 @@ public class EventIn implements Processor {
         message.setHeader(SRC, event.get("src"));
         message.setHeader(DST, event.get("dst"));
         message.setHeader(DPORT, event.get("dport"));
+        String source = String.valueOf(event.get("src"));
+        message.setHeader(ACTOR, "ip:" + (source.contains(":") ? source.substring(0, source.lastIndexOf(':')) : source));
         if (event.get("process") instanceof Map<?, ?> process) {
             message.setHeader(PROCESS, process.get("name"));
             message.setHeader(PID, process.get("pid"));
+            message.setHeader(ACTOR, "pid:" + process.get("pid"));
         }
         message.setHeader(PAYLOAD, payload);
         message.setHeader(TEXT, new String(payload, StandardCharsets.UTF_8));

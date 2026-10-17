@@ -19,5 +19,6 @@ public class DaemonConfiguration implements CamelConfiguration {
         context.getRegistry().bind("eventIn", new EventIn(auth));
         context.getRegistry().bind("actionOut", new ActionOut(auth));
         context.getRegistry().bind("warmUp", new WarmUp());
+        context.getRegistry().bind("state", new SessionState());
     }
 }
