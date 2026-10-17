@@ -48,8 +48,8 @@ jobs:
       - name: Build the nucleus & daemon
         shell: pwsh
         run: |
-          cd nucleus; cargo build --release -p fakenet-cli; cd ..
-          cd daemon; mvn -q -B -Dmaven.test.skip=true package; cd ..
+          cd nucleus; cargo build --release -p fakenet-cli; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; cd ..
+          cd daemon; mvn -q -B "-Dmaven.test.skip=true" package; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; cd ..
       - name: Stage the package layout
         shell: pwsh
         run: |

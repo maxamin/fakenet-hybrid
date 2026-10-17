@@ -1,7 +1,11 @@
 nucleus/target/
 daemon/target/
 daemon/audit/
-capture/
+# Runtime capture output (events.jsonl, pcaps, saved files, ca.pem) — NOT the capture crate.
+# A bare "capture/" also matched nucleus/crates/capture/, so anchor it to real output dirs.
+/capture/
+nucleus/config/capture/
+nucleus/capture/
 dist/
 *.secret
 upstream/flare-fakenet-ng/
