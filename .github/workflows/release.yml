@@ -4,7 +4,7 @@ name: Release
 # artifact with Sigstore cosign (keyless: GitHub's OIDC identity, no stored keys), and
 # publishes a GitHub release. Verify an artifact with, e.g.:
 #   cosign verify-blob --bundle fakenet-hybrid-<v>-<target>.tar.gz.cosign.bundle \
-#     --certificate-identity-regexp '^https://github.com/<owner>/<repo>/\.github/workflows/release\.yml@refs/tags/' \
+#     --certificate-identity-regexp '^https://github.com/maxamin/fakenet-hybrid/\.github/workflows/release\.yml@refs/tags/' \
 #     --certificate-oidc-issuer https://token.actions.githubusercontent.com fakenet-hybrid-<v>-<target>.tar.gz
 
 on:
