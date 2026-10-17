@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "type": "action",
+  "request_id": "6f1c2b0e-4c5a-4f0e-9a39-2b7f4d3c1a10",
+  "session_id": "tcp-0000000000000007",
+  "response": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IGFwcGxpY2F0aW9uL2pzb24NCkNvbnRlbnQtTGVuZ3RoOiAyMg0KDQp7ImNtZCI6InNsZWVwIiwibiI6NjB9",
+  "close": false,
+  "delay_ms": 0,
+  "route": "http-c2-gate"
+}

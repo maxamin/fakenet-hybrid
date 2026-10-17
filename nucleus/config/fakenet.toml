@@ -1,0 +1,197 @@
+# FakeNet hybrid nucleus: sample config (lab use only)
+# Relative paths are relative to this file's directory.
+
+[nucleus]
+bind = "0.0.0.0"                 # the fake services, on the analysis network side
+capture_dir = "capture"          # events.jsonl, traffic.pcap, files/, ca.pem
+timeout_ms = 30000               # idle client timeout
+first_data_timeout_ms = 500      # auto listeners: wait this long for a client to speak first
+health = "127.0.0.1:8099"        # GET /health (loopback only; enforced; details need the secret as a Bearer token)
+max_events_mb = 256              # rotate events.jsonl past this size...
+max_pcap_mb = 1024               # ...and traffic.pcap / wire.pcap past this one
+keep_rotations = 4               # rotated files kept
+max_files_mb = 2048              # stop saving payloads to files/ past this total
+wire_capture = false             # also record every real packet to wire.pcap (root/Administrator)
+
+[daemon]                         # the Camel daemon (loopback only; enforced). "" disables a channel
+websocket_url = "ws://127.0.0.1:8090/link"
+http_url = "http://127.0.0.1:8091/decide"
+deadline_ms = 200                # per decision; on timeout/error the defaults below apply
+backoff_initial_ms = 100
+backoff_max_ms = 10000
+# The shared secret authenticating the link both ways (strongly recommended: without it any
+# local process could pose as the daemon). Create it with:
+#   fakenet-nucleus --generate-secret link.secret
+# and give the daemon the same file (-Dfakenet.link.secret-file=...).
+# secret_file = "link.secret"
+
+[diverter]
+enabled = false                  # true inside the analysis VM (needs root/Administrator)
+mode = "single_host"             # or "gateway" (Linux: this host routes the analysis network)
+ignore_ports = []                # e.g. [22] to keep managing a gateway over SSH
+excluded_processes = []          # e.g. ["python3", "procmon64.exe"]; never diverted
+answer_ping = true               # answer ICMP echo to any address
+# Windows only:
+# gateway_address = ["10.6.6.1"] # mode = "gateway": this host's address on the analysis network
+# fix_dns = false                # point DNS at fix_dns_server while running (FakeNet-NG ModifyLocalDNS)
+# fix_dns_server = "192.0.2.53"
+# fix_gateway = false            # add a default route if there is none (FakeNet-NG FixGateway)
+# queue_num = 4242               # Linux NFQUEUE, used only with excluded_processes
+# ipv6 = true
+
+# Built-in default responses: used whenever the daemon doesn't decide in time
+[defaults.http]
+webroot = "default-files"        # served by path; missing files get a default of their type (FakeNet-NG's)
+server_header = "Microsoft-IIS/10.0"
+max_body_bytes = 16777216
+save_bodies = true
+
+[defaults.dns]
+a = "192.0.2.123"                # point this at the nucleus's address on the analysis network
+# aaaa = "2001:db8::123"
+mx = "mail.fakenet.local"
+txt = "FAKENET"
+ttl = 60
+
+[defaults.raw]
+mode = "echo"                    # or "static"
+response = ""
+
+[defaults.mail]
+hostname = "mail.fakenet.local"
+
+[defaults.ftp]
+root = "default-files"           # files served by path (else a default file of the type)
+banner = "FTP Server Ready"
+passive_ports = [60000, 60010]   # the diverter keeps these ports as-is; [0, 0] = any free port
+
+[defaults.irc]
+server_name = "irc.fakenet.local"
+
+[defaults.tftp]
+root = "default-files"
+
+[defaults.ssh]
+banner = "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.10"
+
+[defaults.telnet]
+banner = "Ubuntu 20.04.6 LTS"
+
+[defaults.ntp]
+time_offset = 0                  # seconds added to the time served
+
+# Listeners (an http listener on UDP serves HTTP/3). protocol = http | dns | raw | smtp | pop3 | imap | ftp | tftp | irc | ssh |
+# telnet | redis | ntp | socks | syslog | echo | discard | daytime | chargen | time | qotd |
+# finger | whois | auto. "auto" sniffs each connection (HTTP on 81, FTP on 80, TLS or SOCKS
+# on anything...). Optional per listener: tls = true, custom = "FakeNet-NG custom.ini",
+# process_whitelist / process_blacklist / host_whitelist / host_blacklist = [...].
+# Convert an existing FakeNet-NG default.ini with: fakenet-nucleus --import-fakenet-ini
+[[listener]]
+name = "DNS"
+protocol = "dns"
+transport = "udp"
+port = 53
+
+[[listener]]
+name = "DNS-TCP"
+protocol = "dns"
+port = 53
+
+[[listener]]
+name = "HTTP"
+protocol = "http"
+port = 80
+
+[[listener]]
+name = "HTTPS"
+protocol = "http"
+port = 443
+tls = true
+
+# HTTP/3 (QUIC): protocol "http" on UDP. Without it, clients fall back to TCP 443 anyway
+[[listener]]
+name = "HTTP3"
+protocol = "http"
+transport = "udp"
+port = 443
+
+[[listener]]
+name = "SMTP"
+protocol = "smtp"
+port = 25
+
+[[listener]]
+name = "SMTPS"
+protocol = "smtp"
+port = 465
+tls = true
+
+[[listener]]
+name = "POP3"
+protocol = "pop3"
+port = 110
+
+[[listener]]
+name = "FTP"
+protocol = "ftp"
+port = 21
+
+[[listener]]
+name = "IRC"
+protocol = "irc"
+port = 6667
+
+[[listener]]
+name = "TFTP"
+protocol = "tftp"
+transport = "udp"
+port = 69
+
+[[listener]]
+name = "IMAP"
+protocol = "imap"
+port = 143
+
+[[listener]]
+name = "Telnet"
+protocol = "telnet"
+port = 23
+
+[[listener]]
+name = "Redis"
+protocol = "redis"
+port = 6379
+
+[[listener]]
+name = "SOCKS"
+protocol = "socks"
+port = 1080
+
+[[listener]]
+name = "NTP"
+protocol = "ntp"
+transport = "udp"
+port = 123
+
+[[listener]]
+name = "Syslog"
+protocol = "syslog"
+transport = "udp"
+port = 514
+
+# SSH clients are fingerprinted (HASSH); skip this if the VM runs its own sshd on 22
+[[listener]]
+name = "SSH"
+protocol = "ssh"
+port = 22
+
+[[listener]]
+name = "Auto"                    # the diverter sends every other TCP port here
+protocol = "auto"
+port = 1337
+
+[[listener]]
+name = "RawUDP"                  # ...and every other UDP port here
+protocol = "auto"
+transport = "udp"
+port = 1338

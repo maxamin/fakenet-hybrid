@@ -1,0 +1,4 @@
+sample_custom_response.ini, sample_raw_response.txt and CustomProviderExample.py are copied unmodified from FakeNet-NG
+(https://github.com/mandiant/flare-fakenet-ng, fakenet/configs/), Copyright Google LLC,
+licensed under the Apache License 2.0. They test compatibility with FakeNet-NG's own
+Custom Response examples.

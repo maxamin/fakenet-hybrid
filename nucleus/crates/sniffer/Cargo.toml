@@ -1,0 +1,9 @@
+[package]
+name = "fakenet-sniffer"
+description = "Protocol detection from a connection's first bytes (FakeNet-NG's taste())"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fakenet-schema.workspace = true

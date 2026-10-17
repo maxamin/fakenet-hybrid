@@ -1,0 +1,16 @@
+[package]
+name = "fakenet-link"
+description = "The nucleus's link to the Camel daemon: WebSocket + HTTP, with a deadline and fallback"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fakenet-schema.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true

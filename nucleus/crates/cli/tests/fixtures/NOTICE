@@ -1,0 +1,3 @@
+fakenet-ng-default.ini is FakeNet-NG's fakenet/configs/default.ini, copied unmodified from
+https://github.com/mandiant/flare-fakenet-ng (Copyright Google LLC, Apache License 2.0), to
+test the importer against FakeNet-NG's real default configuration.

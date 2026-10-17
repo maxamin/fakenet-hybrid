@@ -1,0 +1,20 @@
+# The FakeNet hybrid nucleus. Runs as root: diversion (iptables/NFQUEUE), privileged ports
+# and the wire capture need it. Lab use only: install inside the analysis VM.
+[Unit]
+Description=FakeNet hybrid nucleus
+After=network-online.target fakenet-daemon.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/fakenet-hybrid/bin/fakenet-nucleus -c /etc/fakenet/fakenet.toml
+# Belt and braces: remove any iptables diversion left behind, however the nucleus stopped
+ExecStopPost=/opt/fakenet-hybrid/bin/fakenet-nucleus --restore-network
+WorkingDirectory=/var/lib/fakenet
+Restart=on-failure
+RestartSec=2
+KillSignal=SIGINT
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

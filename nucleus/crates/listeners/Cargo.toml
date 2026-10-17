@@ -1,0 +1,37 @@
+[package]
+name = "fakenet-listeners"
+description = "The nucleus's listeners & protocol handlers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fakenet-schema.workspace = true
+fakenet-sniffer.workspace = true
+fakenet-link.workspace = true
+fakenet-capture.workspace = true
+tokio.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+httparse.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+rcgen.workspace = true
+hickory-proto.workspace = true
+quinn.workspace = true
+h3.workspace = true
+h3-quinn.workspace = true
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+time.workspace = true
+libc.workspace = true
+md-5.workspace = true
+
+[dev-dependencies]
+hyper-util.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true

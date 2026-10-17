@@ -1,0 +1,56 @@
+[workspace]
+resolver = "2"
+members = ["crates/schema", "crates/sniffer", "crates/link", "crates/capture", "crates/listeners", "crates/diverter", "crates/cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+
+# Exact versions (the latest stable releases when written); Cargo.lock pins the full tree
+[workspace.dependencies]
+fakenet-schema = { path = "crates/schema" }
+fakenet-sniffer = { path = "crates/sniffer" }
+fakenet-link = { path = "crates/link" }
+fakenet-capture = { path = "crates/capture" }
+fakenet-listeners = { path = "crates/listeners" }
+fakenet-diverter = { path = "crates/diverter" }
+
+tokio = { version = "=1.53.3", features = ["full"] }
+hyper = { version = "=1.12.0", features = ["http1", "http2", "server", "client"] }
+hyper-util = { version = "=0.1.21", features = ["tokio", "server-auto", "http1", "http2"] }
+http-body-util = "=0.1.5"
+httparse = "=1.10.1"
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
+rcgen = { version = "=0.14.10", default-features = false, features = ["ring", "pem"] }
+hickory-proto = "=0.26.3"
+quinn = { version = "=0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+h3 = "=0.0.8"
+h3-quinn = "=0.0.10"
+bytes = "1"
+tokio-tungstenite = "=0.30.0"
+futures-util = "=0.3.34"
+reqwest = { version = "=0.13.5", default-features = false, features = ["json", "rustls"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+toml = "=1.1.8"
+thiserror = "=2.0.21"
+anyhow = "=1.0.104"
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
+ring = "=0.17.14"
+md-5 = "=0.10.6"
+base64 = "=0.23.1"
+uuid = { version = "=1.28.0", features = ["v4"] }
+time = { version = "=0.3.55", features = ["formatting", "macros"] }
+clap = { version = "=4.6.7", features = ["derive"] }
+libc = "0.2"
+nfq = "=0.2.5"
+windivert = "=0.6.0"
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+[profile.release]
+strip = true
+lto = "thin"

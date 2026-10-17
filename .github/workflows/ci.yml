@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  nucleus-linux:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: nucleus
+    steps:
+      - uses: actions/checkout@v4
+      - name: Interop clients
+        run: sudo apt-get update && sudo apt-get install -y dnsutils redis-tools swaks bsdutils netcat-openbsd openssh-client tshark
+      - name: Tests
+        run: cargo test --workspace
+      - name: Real-client interop
+        run: cargo build -p fakenet-cli && scripts/interop.sh
+      # Root inside a private network namespace: real iptables REDIRECT/NFQUEUE, isolated
+      # from the runner's own network (the runner's kernel has the NAT modules)
+      - name: Diversion & wire capture, end to end
+        run: |
+          cargo test -p fakenet-cli --test linux_diversion --no-run
+          binary=$(ls -t target/debug/deps/linux_diversion-* | grep -v '\.d$' | head -1)
+          sudo unshare --net env FAKENET_NETNS_TEST=1 "$binary" --ignored --nocapture
+
+  nucleus-windows:
+    runs-on: windows-2022
+    defaults:
+      run:
+        working-directory: nucleus
+    steps:
+      - uses: actions/checkout@v4
+      - name: WinDivert 2.2.2
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip -OutFile $env:RUNNER_TEMP\windivert.zip
+          Expand-Archive $env:RUNNER_TEMP\windivert.zip -DestinationPath $env:RUNNER_TEMP
+          "WINDIVERT_PATH=$env:RUNNER_TEMP\WinDivert-2.2.2-A\x64" | Out-File -Append $env:GITHUB_ENV
+      # Builds & tests everything; the WinDivert diverter itself isn't run here (diverting a
+      # CI runner's traffic would cut it off from GitHub)
+      - name: Tests
+        run: cargo test --workspace
+
+  daemon:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Daemon tests & jar
+        working-directory: daemon
+        run: mvn -B package
+      - name: Nucleus <-> Camel link, against the real daemon
+        working-directory: nucleus
+        run: cargo test -p fakenet-cli --test camel_link -- --ignored

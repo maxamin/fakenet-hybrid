@@ -1,0 +1,149 @@
+# The analyst's rules. Edit and save: Camel reloads this file without dropping the nucleus's
+# WebSocket. Each rule answers by setting the body; leaving it empty means "use the
+# nucleus's built-in default" (so only describe what's interesting).
+#
+# Headers available (set from the Event): FakenetProtocol (http, dns, raw, smtp, pop3, ftp,
+# tftp, irc), FakenetSessionId, FakenetSeq, FakenetSrc, FakenetDst, FakenetDport, FakenetTls,
+# FakenetProcess, FakenetPid, FakenetPayload (bytes), FakenetText (payload as UTF-8),
+# FakenetMeta (map), and for convenience FakenetMethod, FakenetPath, FakenetHost (HTTP) and
+# FakenetQname, FakenetQtype (DNS).
+# Headers a rule may set: FakenetClose (true closes the connection after replying),
+# FakenetDelayMs (wait before replying; max 60000), FakenetRoute (name shown in the logs).
+#
+# Events & response formats per protocol (FakenetMeta holds the parsed fields):
+#   http - one event per request (meta: method, path, host, headers). Response: a complete
+#          raw HTTP response ("HTTP/1.1 200 OK\r\nHeader: v\r\n\r\nbody")
+#   dns  - one event per query (meta: qname, qtype). Response: lines like "A 10.6.6.6",
+#          "AAAA ::1", "MX 10 mail.x", "TXT text", "CNAME x", "NXDOMAIN"
+#   raw  - one event per chunk/datagram. Response: the bytes to send
+#   smtp, pop3, ftp - one event per command (meta: command, argument). Response: the reply
+#          line(s) to send instead of the default. Special cases: SMTP's finished message
+#          (meta.command = "MESSAGE", from, to, subject; payload = the message), FTP's RETR
+#          (meta.file = true; response = the file's content) and STOR (payload = the upload)
+#   irc  - one event per client message (meta: command, params, nick). Response: lines to
+#          send, e.g. ":boss!b@c2 PRIVMSG #chan :!cmd" in reply to a JOIN
+#   tftp - one event per read request (meta: opcode RRQ, filename, file = true). Response:
+#          the file's content
+# Camel trims constant/simple expression text: add `trim: false` to keep leading/trailing
+# whitespace such as a final "\n" (see the PING rule).
+
+# Content-Based Router: by protocol first
+- route:
+    id: decide
+    from:
+      uri: direct:decide
+      steps:
+        - choice:
+            when:
+              - simple: "${header.FakenetProtocol} == 'http'"
+                steps:
+                  - to: direct:decide-http
+              - simple: "${header.FakenetProtocol} == 'dns'"
+                steps:
+                  - to: direct:decide-dns
+              - simple: "${header.FakenetProtocol} == 'raw'"
+                steps:
+                  - to: direct:decide-raw
+
+# HTTP: by destination host & path
+- route:
+    id: decide-http
+    from:
+      uri: direct:decide-http
+      steps:
+        - choice:
+            when:
+              # Scripted C2 reply (Groovy): a tasking for the bot, remembering its session
+              - simple: "${header.FakenetPath} startsWith '/gate.php'"
+                steps:
+                  - setHeader:
+                      name: FakenetRoute
+                      constant: c2-gate
+                  - setBody:
+                      groovy: |
+                        def bot = request.headers.FakenetSessionId
+                        def task = "id=${bot};task=sleep;interval=3600"
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nX-Powered-By: PHP/7.4.3\r\n\r\n${task}"
+              # Templated reply (Simple): a fake update check pointing at a fake download.
+              # Downloads of .exe files then get the nucleus's default executable.
+              - simple: "${header.FakenetHost} endsWith 'update.example.com'"
+                steps:
+                  - setHeader:
+                      name: FakenetRoute
+                      constant: fake-update
+                  - setBody:
+                      simple: "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"version\":\"9.9.9\",\"url\":\"http://${header.FakenetHost}/patch.exe\"}"
+
+# DNS: by query name
+- route:
+    id: decide-dns
+    from:
+      uri: direct:decide-dns
+      steps:
+        - choice:
+            when:
+              - simple: "${header.FakenetQname} endsWith 'c2.example'"
+                steps:
+                  - setHeader:
+                      name: FakenetRoute
+                      constant: c2-dns
+                  - setBody:
+                      constant: "A 10.6.6.6"
+              # Make the malware believe its kill switch domain doesn't exist
+              - simple: "${header.FakenetQname} == 'killswitch.example'"
+                steps:
+                  - setHeader:
+                      name: FakenetRoute
+                      constant: killswitch
+                  - setBody:
+                      constant: NXDOMAIN
+
+# Raw TCP/UDP: by payload & destination port
+- route:
+    id: decide-raw
+    from:
+      uri: direct:decide-raw
+      steps:
+        - choice:
+            when:
+              # Scripted raw TCP reply (Groovy): a fake C2 handshake on port 4444. The bot
+              # sends "HELLO <name>", gets a session key and a command, then is disconnected.
+              - simple: "${header.FakenetText} startsWith 'HELLO '"
+                steps:
+                  - setHeader:
+                      name: FakenetRoute
+                      constant: c2-handshake
+                  - setHeader:
+                      name: FakenetClose
+                      constant: true
+                  - setBody:
+                      groovy: |
+                        def name = request.headers.FakenetText.substring(6).trim()
+                        def key = Integer.toHexString((request.headers.FakenetSessionId + name).hashCode())
+                        "WELCOME ${name} KEY=${key}\nCMD sysinfo\n"
+              - simple: "${header.FakenetText} startsWith 'PING'"
+                steps:
+                  - setHeader:
+                      name: FakenetRoute
+                      constant: ping
+                  - setBody:
+                      constant:
+                        expression: "PONG\n"
+                        trim: false
+
+# Warm-up: Groovy compiles each script on first use, which can exceed the nucleus's 200 ms
+# deadline. Each time this file (re)loads, the warmUp processor compiles every Groovy
+# script in the routes and runs a placeholder event per protocol through the router, then
+# the link's channels start (a no-op once they're running). Nothing to maintain here; just
+# keep scripts free of side effects.
+- route:
+    id: decide-warm-up
+    from:
+      uri: "timer:decide-warm-up?repeatCount=1&delay=-1"
+      steps:
+        - process:
+            ref: warmUp
+        - to: "controlbus:route?routeId=link-websocket-in&action=start"
+        - to: "controlbus:route?routeId=link-http&action=start"
+        - log:
+            message: "Rules warmed up; link channels started"

@@ -1,0 +1,232 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fakenet-hybrid.local/schema/fakenet-link-v1.schema.json",
+  "title": "FakeNet hybrid link messages, version 1",
+  "description": "Messages between the Rust nucleus and the Camel daemon, over WebSocket (many in flight, correlated by request_id) or one-shot HTTP POST. Additive changes keep version 1; anything else bumps it.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/Event"
+    },
+    {
+      "$ref": "#/$defs/Action"
+    },
+    {
+      "$ref": "#/$defs/Hello"
+    }
+  ],
+  "$defs": {
+    "Event": {
+      "type": "object",
+      "description": "Something the malware sent, from the nucleus to the daemon. Every event that expects a reply has a request_id; notifications (expects_reply false) never get one.",
+      "required": [
+        "version",
+        "type",
+        "request_id",
+        "session_id",
+        "seq",
+        "protocol",
+        "transport",
+        "src",
+        "dst",
+        "dport",
+        "timestamp",
+        "payload",
+        "expects_reply"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "type": {
+          "const": "event"
+        },
+        "request_id": {
+          "type": "string",
+          "description": "Unique per event, echoed in its Action (UUID)"
+        },
+        "session_id": {
+          "type": "string",
+          "description": "One per TCP connection, or per UDP (peer, port) flow; stable across a multi-step exchange"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The event's position within its session"
+        },
+        "protocol": {
+          "type": "string",
+          "enum": [
+            "http",
+            "dns",
+            "raw",
+            "smtp",
+            "pop3",
+            "imap",
+            "ftp",
+            "tftp",
+            "irc",
+            "ssh",
+            "telnet",
+            "redis",
+            "ntp",
+            "socks",
+            "syslog",
+            "echo",
+            "discard",
+            "daytime",
+            "chargen",
+            "time",
+            "qotd",
+            "finger",
+            "whois"
+          ],
+          "description": "The protocol detected by the sniffer"
+        },
+        "transport": {
+          "type": "string",
+          "enum": [
+            "tcp",
+            "udp"
+          ]
+        },
+        "tls": {
+          "type": "boolean",
+          "default": false
+        },
+        "src": {
+          "type": "string",
+          "description": "Client address, ip:port"
+        },
+        "dst": {
+          "type": "string",
+          "description": "Original destination address the malware connected to, ip:port (or the listener's, if not diverted)"
+        },
+        "dport": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "Original destination port"
+        },
+        "process": {
+          "type": "object",
+          "description": "The local process, when known (SingleHost diversion)",
+          "properties": {
+            "pid": {
+              "type": "integer"
+            },
+            "name": {
+              "type": "string"
+            },
+            "exe": {
+              "type": "string"
+            }
+          }
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "RFC 3339, UTC"
+        },
+        "payload": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "description": "The raw bytes received for this step (an HTTP request, a DNS query, a TCP chunk...)"
+        },
+        "meta": {
+          "type": "object",
+          "description": "Protocol fields parsed by the nucleus, so routes needn't parse payloads: http {method, path, host, headers}, dns {qname, qtype}, smtp {command}, ..."
+        },
+        "expects_reply": {
+          "type": "boolean",
+          "description": "False for notifications (e.g. a connection closed), which the daemon must not answer"
+        },
+        "auth": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Lowercase hex HMAC-SHA256 with the shared link secret, present when the link is authenticated. Signed text: \"fakenet-link-v1 event\\n{request_id}\\n{session_id}\\n{payload}\" (payload exactly as sent, base64)."
+        }
+      },
+      "additionalProperties": true
+    },
+    "Action": {
+      "type": "object",
+      "description": "How to answer one event, from the daemon to the nucleus. A missing or null response means: use the nucleus's built-in default response.",
+      "required": [
+        "version",
+        "type",
+        "request_id",
+        "session_id"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "type": {
+          "const": "action"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "response": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "contentEncoding": "base64",
+          "description": "Bytes to send. http: a complete raw HTTP/1.1 response. dns: UTF-8 lines 'TYPE VALUE' (e.g. 'A 10.6.6.6', 'TXT hello', 'NXDOMAIN'). raw/others: sent as-is."
+        },
+        "close": {
+          "type": "boolean",
+          "default": false,
+          "description": "Close the connection after sending"
+        },
+        "delay_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 60000,
+          "description": "Wait before replying (simulating slow C2). Not counted against the nucleus's decision deadline."
+        },
+        "route": {
+          "type": "string",
+          "description": "Which route decided, for the event log"
+        },
+        "auth": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Lowercase hex HMAC-SHA256 with the shared link secret, present when the link is authenticated. Signed text: \"fakenet-link-v1 action\\n{request_id}\\n{session_id}\\n{response base64, or -}\\n{close}\\n{delay_ms, or -}\". The nucleus rejects unsigned or forged actions when it has a secret."
+        }
+      },
+      "additionalProperties": true
+    },
+    "Hello": {
+      "type": "object",
+      "title": "Hello",
+      "description": "The WebSocket handshake on an authenticated link: the nucleus sends a random nonce first; the daemon answers with the same nonce and auth = HMAC over \"fakenet-link-v1 hello\\n{nonce}\". Nothing else is sent on the connection until it verifies.",
+      "required": [
+        "version",
+        "type",
+        "nonce"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "type": {
+          "const": "hello"
+        },
+        "nonce": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "auth": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

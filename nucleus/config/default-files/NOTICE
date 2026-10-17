@@ -1,0 +1,4 @@
+These default files are FakeNet-NG's fakenet/defaultFiles, copied unmodified from
+https://github.com/mandiant/flare-fakenet-ng (Copyright Google LLC, Apache License 2.0).
+The nucleus serves them when a requested file isn't in the webroot: FakeNet.html for
+pages, FakeNetMini.exe for executables, FakeNet.png for images, and so on.

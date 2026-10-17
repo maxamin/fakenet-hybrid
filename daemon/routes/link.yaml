@@ -1,0 +1,124 @@
+# The link to the Rust nucleus: transport only. Analysts edit decisions.yaml instead.
+# Schema: ../schema/fakenet-link-v1.schema.json
+
+# Primary channel: the nucleus connects to ws://127.0.0.1:8090/link and sends Events; each
+# Action goes back to the same connection. Events are handed to a thread pool (seda) so a
+# slow script never blocks the WebSocket's event loop or other requests.
+# The channels start once the rules are warmed up (see decide-warm-up in decisions.yaml);
+# until then the nucleus can't connect, so it uses its defaults without waiting.
+- route:
+    id: link-websocket-in
+    autoStartup: false
+    from:
+      uri: "vertx-websocket:{{fakenet.link.host}}:{{fakenet.link.port}}/link"
+      steps:
+        - to:
+            uri: "seda:link-events?waitForTaskToComplete=Never&size=10000&blockWhenFull=false"
+
+- route:
+    id: link-websocket-decide
+    from:
+      uri: "seda:link-events?concurrentConsumers=16"
+      steps:
+        - process:
+            ref: eventIn
+        - choice:
+            when:
+              # The handshake: prove we hold the link secret, on this connection only
+              - simple: "${header.FakenetKind} == 'hello'"
+                steps:
+                  - to: "vertx-websocket:{{fakenet.link.host}}:{{fakenet.link.port}}/link"
+              - simple: "${header.FakenetKind} == 'rejected'"
+                steps:
+                  - log:
+                      loggingLevel: WARN
+                      message: "Dropped a link message: ${header.FakenetRejectedReason}"
+            otherwise:
+              steps:
+                - to: direct:decide-safely
+                - filter:
+                    simple: "${header.FakenetExpectsReply}"
+                    steps:
+                      # Back to the connection the event came from (its key is still in the headers)
+                      - to: "vertx-websocket:{{fakenet.link.host}}:{{fakenet.link.port}}/link"
+
+# Secondary channel: one-shot POST http://127.0.0.1:8091/decide with an Event body
+- route:
+    id: link-http
+    autoStartup: false
+    from:
+      uri: "platform-http:/decide?httpMethodRestrict=POST&consumes=application/json&produces=application/json"
+      steps:
+        - process:
+            ref: eventIn
+        - choice:
+            when:
+              - simple: "${header.FakenetKind} != 'event'"
+                steps:
+                  - log:
+                      loggingLevel: WARN
+                      message: "Rejected a /decide request: ${header.FakenetRejectedReason}"
+                  - setHeader:
+                      name: CamelHttpResponseCode
+                      constant: 401
+                  - setBody:
+                      constant: '{"error":"unauthorized"}'
+            otherwise:
+              steps:
+                - to: direct:decide-safely
+        # Fakenet* headers are for routing only; don't leak them into the HTTP response
+        - removeHeaders:
+            pattern: "Fakenet*"
+        - setHeader:
+            name: Content-Type
+            constant: application/json
+
+# Runs the analyst's rules and returns the Action JSON. Any failure in them means "use the
+# nucleus's default", at once (rather than letting the nucleus wait out its deadline).
+- route:
+    id: decide-safely
+    from:
+      uri: direct:decide-safely
+      steps:
+        - doTry:
+            steps:
+              - to: direct:decide
+            doCatch:
+              - exception:
+                  - java.lang.Exception
+                steps:
+                  - log:
+                      loggingLevel: WARN
+                      message: "Rule failed for ${header.FakenetProtocol} ${header.FakenetSessionId}: ${exception.message}; using the default"
+                  - setBody:
+                      simple: "${null}"
+                  - setHeader:
+                      name: FakenetRoute
+                      constant: rule-error
+        - process:
+            ref: actionOut
+        # Wire Tap: a copy of the event + decision goes to the audit pipeline, off the
+        # response path
+        - wireTap:
+            uri: direct:audit
+
+# Wire Tap target: fan out to the audit file and the log. Add more sinks here (SIEM over
+# HTTP, Kafka, syslog...) with their stock Camel components.
+- route:
+    id: audit
+    from:
+      uri: direct:audit
+      steps:
+        - setBody:
+            groovy: |
+              def json = lab.fakenet.daemon.LinkSchema.JSON
+              json.writeValueAsString([
+                event : json.readTree(exchange.getProperty('FakenetEventJson', String)),
+                action: json.readTree(request.getBody(String))
+              ])
+        - multicast:
+            steps:
+              - to: "file:{{fakenet.audit.dir}}?fileName=events-${date:now:yyyyMMdd}.jsonl&fileExist=Append&appendChars=\\n"
+              - log:
+                  loggingLevel: INFO
+                  message: "${header.FakenetProtocol} ${header.FakenetSrc} -> ${header.FakenetDst} [${header.FakenetSessionId}] => ${header.FakenetRoute}"

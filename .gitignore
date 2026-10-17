@@ -1,0 +1,8 @@
+nucleus/target/
+daemon/target/
+daemon/audit/
+capture/
+dist/
+*.secret
+upstream/flare-fakenet-ng/
+upstream/*.tar.gz

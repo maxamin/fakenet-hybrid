@@ -1,0 +1,21 @@
+# The FakeNet hybrid Camel daemon: decides responses. Unprivileged, loopback-only.
+[Unit]
+Description=FakeNet hybrid daemon (Apache Camel)
+After=network.target
+
+[Service]
+Type=simple
+User=fakenet
+Group=fakenet
+WorkingDirectory=/opt/fakenet-hybrid/daemon
+ExecStart=/usr/bin/java -Dfakenet.link.secret-file=/etc/fakenet/link.secret -Dfakenet.audit.dir=/var/lib/fakenet/audit -jar /opt/fakenet-hybrid/daemon/fakenet-daemon.jar
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/fakenet/audit /opt/fakenet-hybrid/daemon/routes
+
+[Install]
+WantedBy=multi-user.target

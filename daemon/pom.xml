@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>lab.fakenet</groupId>
+    <artifactId>fakenet-daemon</artifactId>
+    <version>0.1.0</version>
+    <name>FakeNet hybrid daemon</name>
+    <description>Decides the nucleus's responses with stock Apache Camel and YAML routes (lab use only)</description>
+
+    <properties>
+        <maven.compiler.release>21</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- 4.18.x is a Camel LTS line -->
+        <camel.version>4.18.5</camel.version>
+        <log4j.version>2.25.3</log4j.version>
+        <junit.version>5.13.4</junit.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.apache.camel</groupId>
+                <artifactId>camel-bom</artifactId>
+                <version>${camel.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- Runtime: standalone Camel, configured by application.properties -->
+        <dependency><groupId>org.apache.camel</groupId><artifactId>camel-main</artifactId></dependency>
+        <!-- Routes in YAML, reloaded on change -->
+        <dependency><groupId>org.apache.camel</groupId><artifactId>camel-yaml-dsl</artifactId></dependency>
+        <!-- Primary channel: the WebSocket server the nucleus connects to -->
+        <dependency><groupId>org.apache.camel</groupId><artifactId>camel-vertx-websocket</artifactId></dependency>
+        <!-- Secondary channel (POST /decide) and the health endpoint -->
+        <dependency><groupId>org.apache.camel</groupId><artifactId>camel-platform-http-main</artifactId></dependency>
+        <dependency><groupId>org.apache.camel</groupId><artifactId>camel-platform-http-vertx</artifactId></dependency>
+        <dependency><groupId>org.apache.camel</groupId><artifactId>camel-health</artifactId></dependency>
+        <!-- Event/Action JSON -->
+        <dependency><groupId>org.apache.camel</groupId><artifactId>camel-jackson</artifactId></dependency>
+        <!-- Scripted replies -->
+        <dependency><groupId>org.apache.camel</groupId><artifactId>camel-groovy</artifactId></dependency>
+        <!-- Routing EIPs & Wire Tap targets -->
+        <dependency><groupId>org.apache.camel</groupId><artifactId>camel-direct</artifactId></dependency>
+        <dependency><groupId>org.apache.camel</groupId><artifactId>camel-seda</artifactId></dependency>
+        <dependency><groupId>org.apache.camel</groupId><artifactId>camel-log</artifactId></dependency>
+        <dependency><groupId>org.apache.camel</groupId><artifactId>camel-file</artifactId></dependency>
+        <!-- Warms up the rules when they (re)load, then starts the link's channels -->
+        <dependency><groupId>org.apache.camel</groupId><artifactId>camel-timer</artifactId></dependency>
+        <dependency><groupId>org.apache.camel</groupId><artifactId>camel-controlbus</artifactId></dependency>
+
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-slf4j2-impl</artifactId>
+            <version>${log4j.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>fakenet-daemon</finalName>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.4</version>
+            </plugin>
+            <!-- target/fakenet-daemon.jar + target/lib/: run with java -jar, no fat-jar merging of
+                 Camel's META-INF service files -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.9.0</version>
+                <executions>
+                    <execution>
+                        <id>copy-dependencies</id>
+                        <phase>package</phase>
+                        <goals><goal>copy-dependencies</goal></goals>
+                        <configuration>
+                            <outputDirectory>${project.build.directory}/lib</outputDirectory>
+                            <includeScope>runtime</includeScope>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.2</version>
+                <configuration>
+                    <archive>
+                        <manifest>
+                            <mainClass>lab.fakenet.daemon.FakenetDaemon</mainClass>
+                            <addClasspath>true</addClasspath>
+                            <classpathPrefix>lib/</classpathPrefix>
+                        </manifest>
+                    </archive>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
