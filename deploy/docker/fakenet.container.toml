@@ -15,12 +15,37 @@ max_files_mb = 2048              # stop saving payloads to files/ past this tota
 wire_capture = false             # also record every real packet to wire.pcap (root/Administrator)
 tls_keylog = true                # TLS secrets to tls-keys.log: Wireshark decrypts wire.pcap with it
 fingerprints = ["fingerprints/sslbl-ja3.csv"]  # known JA3/JA4/HASSH lists (see fingerprints/README.md)
+ca_cert = "ca/fakenet-ca.pem"      # the interception CA: loaded if present, else created once and kept,
+ca_key = "ca/fakenet-ca.key"       # so the VM trusts it across restarts (remove both lines: a new CA per start)
 
 [limits]                         # so a hostile sample can't exhaust the nucleus (0: unlimited)
 max_sessions = 4096              # concurrent TCP connections + UDP clients; new ones past it are dropped
 per_source_per_second = 0        # new sessions per second per source address (off: scanners open many)
 per_source_burst = 200
 memory_budget_mb = 1024          # payloads buffered at once (bodies, uploads, emails); past it they're refused
+
+[manual]                         # live manual mode: answer matching requests yourself in the dashboard
+enabled = false                  # off: every request gets a rule's or the default answer at once
+timeout_ms = 120000              # an unanswered held request gets the proposed answer after this
+# protocols = ["http", "raw"]    # hold only these protocols (empty: all)
+# hosts = ["c2.example"]         # ...only these hosts/subdomains or destination IPs
+# contains = "/gate"             # ...only requests whose path, name or command contains this
+
+# Reverse-engineering hooks: act on the sample's process when an event matches, before it
+# gets its answer. Actions: pause (SIGSTOP; resume from the dashboard), dump (readable memory
+# to capture/hooks/, Linux), command (argv, no shell; placeholders {pid} {session_id}
+# {request_id} {protocol} {event} {dir}).
+# [[hook]]
+# name = "first-beacon"
+# protocols = ["http"]
+# hosts = ["c2.example"]
+# actions = ["dump", "pause"]
+# once = true
+# [[hook]]
+# name = "trace-sockets"
+# actions = ["command"]
+# command = ["frida", "-p", "{pid}", "-l", "/opt/fakenet-hybrid/hooks/net-backtrace.js"]
+# wait_ms = 3000                 # hold the answer until Frida has attached
 
 [yara]                           # scan every saved payload (bodies, uploads, emails) with YARA
 rules = []                       # rule files or folders of *.yar/*.yara, e.g. ["yara-rules"]

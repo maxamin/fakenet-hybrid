@@ -103,14 +103,34 @@ pub(crate) async fn serve(mut session: Session, mut stream: BoxStream, protocol:
     }
 }
 
-/// The client's first bytes, or nothing if it waits for us to speak first
+/// After a fragment the sniffer can't place yet, how long it waits for the next one
+const FRAGMENT_WAIT: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// The client's first bytes, or nothing if it waits for us to speak first. A first message
+/// written in pieces (`GE` then `T / HTTP/1.1`, a DNS length prefix on its own) is
+/// collected until the sniffer recognises it, `PEEK` bytes arrive, the client pauses for
+/// `FRAGMENT_WAIT`, or `first_data_timeout` passes.
 async fn peek(stream: &mut BoxStream, ctx: &Context) -> anyhow::Result<Vec<u8>> {
+    let deadline = tokio::time::Instant::now() + ctx.first_data_timeout;
+    let mut data = Vec::new();
     let mut buffer = vec![0u8; PEEK];
-    match tokio::time::timeout(ctx.first_data_timeout, stream.read(&mut buffer)).await {
-        Err(_) => Ok(Vec::new()),
-        Ok(read) => {
-            buffer.truncate(read?);
-            Ok(buffer)
+    loop {
+        let wait = match data.is_empty() {
+            true => deadline.saturating_duration_since(tokio::time::Instant::now()),
+            false => FRAGMENT_WAIT.min(deadline.saturating_duration_since(tokio::time::Instant::now())),
+        };
+        match tokio::time::timeout(wait, stream.read(&mut buffer[..PEEK - data.len()])).await {
+            Err(_) => return Ok(data),
+            Ok(read) => {
+                let read = read?;
+                if read == 0 {
+                    return Ok(data);
+                }
+                data.extend_from_slice(&buffer[..read]);
+            }
+        }
+        if data.len() >= PEEK || fakenet_sniffer::confident(fakenet_sniffer::DEFAULT_ORDER, &data, Transport::Tcp) {
+            return Ok(data);
         }
     }
 }

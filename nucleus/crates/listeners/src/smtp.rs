@@ -141,16 +141,21 @@ async fn auth(lines: &mut Lines, session: &Session, arg: &str) -> anyhow::Result
 
 /// Reads DATA until the lone "." line, undoing dot-stuffing (RFC 5321 4.5.2)
 async fn read_message(lines: &mut Lines, session: &Session) -> anyhow::Result<Vec<u8>> {
+    // Bytes, not text: 8-bit messages (Latin-1, Shift-JIS, raw binary) are saved exactly, and
+    // a long unwrapped line is data, not an error
     let mut message = Vec::new();
     let mut held = session.ctx.limits.hold();
-    while let Some(line) = lines.read(session).await? {
-        if line == "." {
+    while let Some(mut line) = lines.read_raw_max(session, MAX_MESSAGE.saturating_sub(message.len()) + 2).await? {
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+        if line == b"." {
             break;
         }
-        let line = line.strip_prefix('.').unwrap_or(&line);
+        let line = line.strip_prefix(b".").unwrap_or(&line);
         anyhow::ensure!(message.len() + line.len() + 2 <= MAX_MESSAGE, "message too large");
         held.grow(line.len() + 2)?;
-        message.extend_from_slice(line.as_bytes());
+        message.extend_from_slice(line);
         message.extend_from_slice(b"\r\n");
     }
     Ok(message)

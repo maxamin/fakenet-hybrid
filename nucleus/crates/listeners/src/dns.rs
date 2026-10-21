@@ -110,10 +110,27 @@ pub fn default_answer(qtype: RecordType, defaults: &DnsDefaults) -> Answer {
         RecordType::A | RecordType::ANY => vec![RData::A(A(defaults.a))],
         RecordType::AAAA => defaults.aaaa.map(|ip| vec![RData::AAAA(AAAA(ip))]).unwrap_or_default(),
         RecordType::MX => Name::from_ascii(&defaults.mx).map(|n| vec![RData::MX(MX::new(10, n))]).unwrap_or_default(),
-        RecordType::TXT => vec![RData::TXT(TXT::new(vec![defaults.txt.clone()]))],
+        RecordType::TXT => vec![txt(&defaults.txt)],
         _ => vec![], // NODATA: no records, no error
     };
     Answer::Records(records)
+}
+
+/// A TXT record holding `value`, split into character-strings of at most 255 bytes (as
+/// real servers do with long values; clients concatenate them)
+pub fn txt(value: &str) -> RData {
+    let mut strings = Vec::new();
+    let mut rest = value;
+    while rest.len() > 255 {
+        let mut cut = 255;
+        while !rest.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        strings.push(rest[..cut].to_string());
+        rest = &rest[cut..];
+    }
+    strings.push(rest.to_string());
+    RData::TXT(TXT::new(strings))
 }
 
 /// Parses the daemon's text answer. Unparseable lines are skipped (and reported).
@@ -129,7 +146,7 @@ pub fn parse_answer(text: &str) -> (Answer, Vec<String>) {
             "REFUSED" => return (Answer::Code(ResponseCode::Refused), errors),
             "A" => value.parse::<Ipv4Addr>().map(|ip| RData::A(A(ip))).map_err(|e| e.to_string()),
             "AAAA" => value.parse::<Ipv6Addr>().map(|ip| RData::AAAA(AAAA(ip))).map_err(|e| e.to_string()),
-            "TXT" => Ok(RData::TXT(TXT::new(vec![value.to_string()]))),
+            "TXT" => Ok(txt(value)),
             "MX" => {
                 let (preference, exchange) = match value.split_once(char::is_whitespace) {
                     Some((p, e)) if p.parse::<u16>().is_ok() => (p.parse().unwrap(), e.trim()),
@@ -192,7 +209,20 @@ pub async fn answer(message: &[u8], session: &mut Session) -> Option<Vec<u8>> {
             }
         }
     }
-    let bytes = response.to_vec().ok()?;
+    let bytes = match response.to_vec() {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            // The answer can't be encoded (e.g. over 64 KiB): say why, and answer SERVFAIL
+            // rather than leaving the client to time out
+            session.log("invalid_answer", json!({ "errors": [format!("encoding the answer: {e}")] }));
+            let mut failure = Message::new(request.metadata.id, MessageType::Response, request.metadata.op_code);
+            failure.metadata.recursion_desired = request.metadata.recursion_desired;
+            failure.metadata.recursion_available = true;
+            failure.metadata.response_code = ResponseCode::ServFail;
+            failure.add_query(query);
+            failure.to_vec().ok()?
+        }
+    };
     session.server_data(&bytes);
     Some(bytes)
 }
@@ -229,6 +259,18 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert_eq!(parse_answer("NXDOMAIN").0, Answer::Code(ResponseCode::NXDomain));
         assert_eq!(parse_answer("").0, Answer::Records(vec![]));
+    }
+
+    #[test]
+    fn long_txt_values_are_split_and_encode() {
+        let long = "QUJD".repeat(200) + "é"; // 802 bytes, a two-byte character at the end
+        let RData::TXT(record) = txt(&long) else { panic!() };
+        let strings: Vec<&[u8]> = record.txt_data.iter().map(|s| &s[..]).collect();
+        assert!(strings.iter().all(|s| s.len() <= 255));
+        assert_eq!(strings.concat(), long.as_bytes());
+        let mut message = Message::new(1, MessageType::Response, hickory_proto::op::OpCode::Query);
+        message.add_answer(Record::from_rdata(Name::from_ascii("t.example.").unwrap(), 60, txt(&long)));
+        assert!(message.to_vec().is_ok());
     }
 
     #[test]

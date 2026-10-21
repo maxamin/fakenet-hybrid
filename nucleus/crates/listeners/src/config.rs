@@ -201,7 +201,7 @@ pub struct FtpDefaults {
 
 impl Default for FtpDefaults {
     fn default() -> Self {
-        FtpDefaults { root: None, banner: "FTP Server Ready".into(), passive_ports: (0, 0) }
+        FtpDefaults { root: None, banner: "FTP Server Ready".into(), passive_ports: (60000, 60010) }
     }
 }
 

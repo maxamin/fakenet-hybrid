@@ -330,6 +330,13 @@ pub fn score(protocol: Protocol, data: &[u8], port: u16, transport: Transport) -
     port_score + content_score
 }
 
+/// Whether `data` already identifies a protocol by content (not merely by port), so a
+/// sniffer need not wait for more of the client's first message
+pub fn confident(candidates: &[Protocol], data: &[u8], transport: Transport) -> bool {
+    // Port 0 is no protocol's default port: what's left is the content score
+    looks_like_tls(data) || candidates.iter().any(|&p| p != Protocol::Raw && score(p, data, 0, transport) >= 2)
+}
+
 /// The best protocol for a connection's first bytes. `candidates` are in tie-break order.
 pub fn sniff(candidates: &[Protocol], data: &[u8], port: u16, transport: Transport) -> Protocol {
     let mut best = (0, Protocol::Raw);
@@ -354,6 +361,15 @@ pub fn sniff_silent(candidates: &[Protocol], port: u16) -> Protocol {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn confidence_needs_content_not_just_a_port() {
+        assert!(!confident(DEFAULT_ORDER, b"GE", Transport::Tcp));
+        assert!(confident(DEFAULT_ORDER, b"GET / HTTP/1.1\r\n", Transport::Tcp));
+        assert!(!confident(DEFAULT_ORDER, b"\x00\x1d", Transport::Tcp)); // A DNS length prefix alone
+        assert!(confident(DEFAULT_ORDER, b"\x16\x03\x01", Transport::Tcp));
+        assert!(!confident(DEFAULT_ORDER, b"\xde\xad\xbe\xef", Transport::Tcp));
+    }
 
     #[test]
     fn recognizes_the_ported_protocols_anywhere() {

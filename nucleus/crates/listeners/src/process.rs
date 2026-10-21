@@ -73,22 +73,30 @@ pub fn find_process(transport: Transport, client: SocketAddr, server: SocketAddr
         Transport::Tcp => &["/proc/net/tcp", "/proc/net/tcp6"],
         Transport::Udp => &["/proc/net/udp", "/proc/net/udp6"],
     };
-    let inode = tables.iter().find_map(|table| {
-        let entries = parse_socket_table(&std::fs::read_to_string(table).ok()?);
-        entries
-            .iter()
-            .find(|e| {
-                same_address(e.local, client)
-                    // For TCP, its peer must be us (another socket may share the local port
-                    // on a different address); unconnected UDP sockets have no peer
-                    && (transport == Transport::Udp || same_address(e.remote, server))
-            })
-            .map(|e| e.inode)
-    })?;
+    let entries: Vec<SocketEntry> = tables.iter().filter_map(|table| std::fs::read_to_string(table).ok()).flat_map(|text| parse_socket_table(&text)).collect();
+    let inode = matching_socket(&entries, transport, client, server)?;
     if inode == 0 {
         return None;
     }
     find_socket_owner(inode)
+}
+
+/// The socket in `entries` at the client end: its exact address; for UDP, else one bound to
+/// the wildcard address on the client's port (a client that `sendto()`s without
+/// `connect()`ing shows as 0.0.0.0:port or [::]:port)
+#[cfg(target_os = "linux")]
+fn matching_socket(entries: &[SocketEntry], transport: Transport, client: SocketAddr, server: SocketAddr) -> Option<u64> {
+    let exact = entries.iter().find(|e| {
+        same_address(e.local, client)
+            // For TCP, its peer must be us (another socket may share the local port on a
+            // different address); unconnected UDP sockets have no peer
+            && (transport == Transport::Udp || same_address(e.remote, server))
+    });
+    let wildcard = || match transport {
+        Transport::Udp => entries.iter().find(|e| e.local.port() == client.port() && e.local.ip().is_unspecified()),
+        Transport::Tcp => None,
+    };
+    exact.or_else(wildcard).map(|e| e.inode)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -135,5 +143,26 @@ mod tests {
         let found = find_process(Transport::Tcp, client.local_addr().unwrap(), listener.local_addr().unwrap()).unwrap();
         assert_eq!(found.pid, std::process::id());
         assert_eq!(find_process(Transport::Tcp, "192.0.2.1:1".parse().unwrap(), listener.local_addr().unwrap()), None);
+    }
+
+    #[test]
+    fn finds_unconnected_udp_clients_on_wildcard_sockets() {
+        let server = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let client = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        client.send_to(b"q", server.local_addr().unwrap()).unwrap();
+        let mut buffer = [0u8; 4];
+        let (_, from) = server.recv_from(&mut buffer).unwrap(); // 127.0.0.1:port
+        let found = find_process(Transport::Udp, from, server.local_addr().unwrap()).unwrap();
+        assert_eq!(found.pid, std::process::id());
+    }
+
+    #[test]
+    fn prefers_the_exact_socket_over_a_wildcard_one() {
+        let entry = |local: &str, inode| SocketEntry { local: local.parse().unwrap(), remote: "0.0.0.0:0".parse().unwrap(), inode };
+        let entries = [entry("0.0.0.0:5353", 1), entry("10.0.0.5:5353", 2)];
+        let server = "10.0.0.1:53".parse().unwrap();
+        assert_eq!(matching_socket(&entries, Transport::Udp, "10.0.0.5:5353".parse().unwrap(), server), Some(2));
+        assert_eq!(matching_socket(&entries, Transport::Udp, "10.0.0.9:5353".parse().unwrap(), server), Some(1));
+        assert_eq!(matching_socket(&entries, Transport::Tcp, "10.0.0.9:5353".parse().unwrap(), server), None);
     }
 }

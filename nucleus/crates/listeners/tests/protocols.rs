@@ -102,6 +102,15 @@ async fn smtp_accepts_mail_with_auth_and_starttls() {
     assert!(smtp.command("DATA").await.starts_with("354"));
     smtp.send("Subject: Exfil\r\n\r\nline one\r\n..leading dot\r\n.").await;
     assert!(smtp.reply().await.starts_with("250 OK queued"));
+    // BUG-07: 8-bit bytes kept as sent, and a 20 KB unwrapped line accepted
+    assert!(smtp.command("MAIL FROM:<bot@evil.example>").await.starts_with("250"));
+    assert!(smtp.command("RCPT TO:<victim@corp.example>").await.starts_with("250"));
+    assert!(smtp.command("DATA").await.starts_with("354"));
+    let long = "A".repeat(20_000);
+    let mut eight_bit = b"Subject: Latin-1\r\n\r\ncaf\xe9 \x82\xa0\r\n".to_vec();
+    eight_bit.extend_from_slice(format!("{long}\r\n.\r\n").as_bytes());
+    smtp.conn.get_mut().write_all(&eight_bit).await.unwrap();
+    assert!(smtp.reply().await.starts_with("250 OK queued"));
     assert!(smtp.command("QUIT").await.starts_with("221"));
 
     let credentials: Vec<_> = nucleus.kinds("credentials").iter().map(|c| (c["username"].as_str().unwrap().to_string(), c["password"].as_str().unwrap().to_string())).collect();
@@ -112,6 +121,10 @@ async fn smtp_accepts_mail_with_auth_and_starttls() {
     assert_eq!((email["from"].as_str(), email["subject"].as_str(), email["tls"].as_bool()), (Some("bot@evil.example"), Some("Exfil"), Some(true)));
     let saved = std::fs::read_to_string(email["saved"].as_str().unwrap()).unwrap();
     assert_eq!(saved, "Subject: Exfil\r\n\r\nline one\r\n.leading dot\r\n"); // Dot-unstuffed
+    let second = std::fs::read(nucleus.kinds("email")[1]["saved"].as_str().unwrap()).unwrap();
+    let mut expected = b"Subject: Latin-1\r\n\r\ncaf\xe9 \x82\xa0\r\n".to_vec();
+    expected.extend_from_slice(format!("{}\r\n", "A".repeat(20_000)).as_bytes());
+    assert_eq!(second, expected);
     let data_event = nucleus.kinds("event").into_iter().find(|e| e["meta"]["command"] == "MESSAGE").unwrap();
     assert_eq!(data_event["meta"]["to"][0], "victim@corp.example");
 }
@@ -288,6 +301,10 @@ async fn imap_ssh_telnet_and_redis_honeypots() {
     let mut imap = connect(nucleus.address("imap")).await;
     assert!(imap.line().await.starts_with("* OK [CAPABILITY"));
     assert_eq!(imap.command("a1 LOGIN \"alice\" \"s3cret\"").await, "a1 OK LOGIN completed\r\n");
+    // Literals (BUG-17): a synchronizing one gets a continuation, a non-synchronizing one doesn't
+    assert_eq!(imap.command("a1b LOGIN {3}").await, "+ Ready for literal data\r\n");
+    imap.send("bob {7+}\r\np\"ss wd").await;
+    assert_eq!(imap.line().await, "a1b OK LOGIN completed\r\n");
     imap.send("a2 SELECT INBOX").await;
     let mut select = String::new();
     while !select.contains("a2 OK") {
@@ -358,6 +375,7 @@ async fn imap_ssh_telnet_and_redis_honeypots() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     let credentials: Vec<_> = nucleus.kinds("credentials").iter().map(|c| (c["protocol"].as_str().unwrap().to_string(), c["password"].as_str().unwrap().to_string())).collect();
     assert!(credentials.contains(&("imap".into(), "s3cret".into())), "{credentials:?}");
+    assert!(nucleus.kinds("credentials").iter().any(|c| c["username"] == "bob" && c["password"] == "p\"ss wd"), "IMAP literals");
     assert!(credentials.contains(&("telnet".into(), "xc3511".into())), "{credentials:?}");
     assert!(credentials.contains(&("redis".into(), "foobar".into())), "{credentials:?}");
     let ssh_client = &nucleus.kinds("ssh_client")[0];

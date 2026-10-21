@@ -8,6 +8,8 @@ nucleus/config/capture/
 nucleus/capture/
 dist/
 *.secret
+# The saved interception CA (config/ca/): its key is a secret
+nucleus/config/ca/
 upstream/flare-fakenet-ng/
 upstream/*.tar.gz
 nucleus/fuzz/target/

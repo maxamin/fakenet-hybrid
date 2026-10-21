@@ -44,6 +44,10 @@ pub struct Context {
     pub limits: Arc<crate::limits::Limits>,
     /// Known JA3/JA4/HASSH fingerprints -> label (see fakenet_sniffer::tls::parse_known)
     pub known_fingerprints: Arc<std::collections::HashMap<String, String>>,
+    /// Live manual mode (when enabled): the analyst answers matching requests
+    pub manual: Option<Arc<crate::manual::Manual>>,
+    /// Reverse-engineering hooks: pause, dump or instrument the sample on matching events
+    pub hooks: Option<Arc<crate::hooks::Hooks>>,
 }
 
 pub struct Session {
@@ -132,12 +136,53 @@ impl Session {
     /// Never fails and never waits longer than the link's deadline (plus any delay the daemon
     /// asked for).
     pub async fn decide(&mut self, payload: &[u8], meta: Value) -> Option<Action> {
+        self.decide_with_default(payload, meta, None).await
+    }
+
+    /// `decide`, telling live manual mode what the handler would answer by default
+    pub async fn decide_with_default(&mut self, payload: &[u8], meta: Value, default: Option<&[u8]>) -> Option<Action> {
         let event = self.builder.event(payload.to_vec(), meta, true);
         self.ctx.capture.log("event", json!(event));
         if let Some(explorer) = &self.ctx.explorer {
             explorer.observe(&event);
         }
-        let decided = match self.ctx.link.decide(&event).await {
+        if let Some(hooks) = &self.ctx.hooks {
+            hooks.fire(&event, &self.ctx.capture).await;
+        }
+        let decided = self.decide_event(&event).await;
+        match &self.ctx.manual {
+            Some(manual) if manual.wants(&event) => {
+                let proposed = decided.as_ref().and_then(|a| a.response.as_deref()).or(default);
+                let close = decided.as_ref().is_some_and(|a| a.close);
+                let verdict = manual.hold(&event, proposed, close).await;
+                let (response, close, chosen) = match verdict {
+                    crate::manual::Verdict::Proposed => return decided,
+                    crate::manual::Verdict::Send { response, close } => (response, close, "send"),
+                    crate::manual::Verdict::Close => (Vec::new(), true, "close"),
+                };
+                self.ctx.capture.log("manual", json!({
+                    "session_id": event.session_id, "request_id": event.request_id, "verdict": chosen,
+                    "close": close, "response_bytes": response.len(),
+                }));
+                Some(Action {
+                    version: fakenet_schema::VERSION,
+                    kind: fakenet_schema::ActionKind::Action,
+                    request_id: event.request_id.clone(),
+                    session_id: event.session_id.clone(),
+                    response: Some(response),
+                    close,
+                    delay_ms: None,
+                    route: Some("manual".into()),
+                    auth: None,
+                })
+            }
+            _ => decided,
+        }
+    }
+
+    /// The daemon's decision, or the explorer's proposal for what it left to the default
+    async fn decide_event(&mut self, event: &fakenet_schema::Event) -> Option<Action> {
+        let decided = match self.ctx.link.decide(event).await {
             Decision::Action(action) => {
                 self.ctx.capture.log("decision", json!({
                     "session_id": event.session_id, "request_id": event.request_id, "route": action.route,
@@ -161,7 +206,7 @@ impl Session {
         if decided.as_ref().is_some_and(|a| a.response.is_some()) {
             return decided;
         }
-        let proposal = self.ctx.explorer.as_ref().and_then(|explorer| explorer.propose(&event));
+        let proposal = self.ctx.explorer.as_ref().and_then(|explorer| explorer.propose(event));
         match proposal {
             Some(proposal) => {
                 self.ctx.capture.log("explored", json!({
@@ -199,7 +244,7 @@ impl Session {
     /// One protocol step: asks the daemon, and returns its response or else `default`, plus
     /// whether to close the connection afterwards (the daemon's close flag, or `close`)
     pub async fn answer(&mut self, payload: &[u8], meta: Value, default: Vec<u8>, close: bool) -> (Vec<u8>, bool) {
-        match self.decide(payload, meta).await {
+        match self.decide_with_default(payload, meta, Some(&default)).await {
             Some(action) => {
                 let close = close || action.close;
                 (action.response.unwrap_or(default), close)

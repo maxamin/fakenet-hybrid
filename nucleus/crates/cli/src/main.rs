@@ -1,6 +1,6 @@
 //! fakenet-nucleus: runs the listeners, links to the Camel daemon, captures everything
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -64,6 +64,28 @@ struct Args {
     /// Send a capture's events to the daemon and print what the current rules decide
     #[arg(long, value_name = "EVENTS")]
     replay: Option<PathBuf>,
+    /// Compare two runs (capture folders or events.jsonl files): what only one of them
+    /// contacted, asked, sent or triggered; JSON to --output if given; and exit
+    #[arg(long, num_args = 2, value_names = ["A", "B"])]
+    diff: Vec<PathBuf>,
+    /// Infer the structure of unknown (raw) client messages per destination: magic, length
+    /// field, counter, encodings, XOR key; with --output, Wireshark Lua dissectors go there
+    #[arg(long, value_name = "EVENTS")]
+    infer: Option<PathBuf>,
+    /// With --infer or --decode: every protocol, not only raw
+    #[arg(long)]
+    all_protocols: bool,
+    /// Decode the client payloads of a capture with --transform steps, into --output
+    /// (default: decoded/ next to the events)
+    #[arg(long, value_name = "EVENTS")]
+    decode: Option<PathBuf>,
+    /// A --decode step, applied in order: base64, hex, xor:KEY, rc4:KEY (KEY hex or text:...),
+    /// skip:N
+    #[arg(long = "transform", value_name = "STEP", requires = "decode")]
+    transforms: Vec<String>,
+    /// With --decode: only the destinations containing this (e.g. ":4444")
+    #[arg(long = "only", value_name = "TEXT", requires = "decode")]
+    only: Option<String>,
     /// Write a new link secret to PATH (for `[daemon] secret_file` and the daemon's
     /// fakenet.link.secret-file), and exit
     #[arg(long, value_name = "PATH")]
@@ -108,13 +130,44 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(events) = &args.report {
         let output = args.output.clone().unwrap_or_else(|| PathBuf::from("report.html"));
-        fakenet_cli::write_report(std::slice::from_ref(events), &output)?;
+        fakenet_cli::write_report(&fakenet_capture::with_rotations(events), &output)?;
         println!("Wrote {}", output.display());
+        return Ok(());
+    }
+    if let [a, b] = &args.diff[..] {
+        let read = |path: &PathBuf| fakenet_cli::read_records(&fakenet_cli::diff::capture_files(path).into_iter().filter(|f| f.exists()).collect::<Vec<_>>());
+        let (records_a, records_b) = (read(a)?, read(b)?);
+        anyhow::ensure!(!records_a.is_empty() && !records_b.is_empty(), "no records in {} or {}", a.display(), b.display());
+        let diff = fakenet_cli::diff::compare(&fakenet_cli::diff::behaviour(&records_a), &fakenet_cli::diff::behaviour(&records_b));
+        if let Some(output) = &args.output {
+            std::fs::write(output, serde_json::to_string_pretty(&diff)?)?;
+        }
+        print!("{}", fakenet_cli::diff::render(&diff, &a.display().to_string(), &b.display().to_string()));
+        return Ok(());
+    }
+    if let Some(events) = &args.infer {
+        let records = fakenet_cli::read_records(&fakenet_capture::with_rotations(events))?;
+        let found = fakenet_cli::infer::infer(&records, args.all_protocols, args.output.as_deref())?;
+        if found.as_object().is_none_or(|o| o.is_empty()) {
+            println!("No {} client messages in {}", if args.all_protocols { "" } else { "raw" }, events.display());
+        }
+        println!("{}", serde_json::to_string_pretty(&found)?);
+        return Ok(());
+    }
+    if let Some(events) = &args.decode {
+        anyhow::ensure!(!args.transforms.is_empty(), "--decode needs at least one --transform (base64, hex, xor:KEY, rc4:KEY, skip:N)");
+        let transforms = args.transforms.iter().map(|t| fakenet_cli::infer::parse_transform(t)).collect::<anyhow::Result<Vec<_>>>()?;
+        let records = fakenet_cli::read_records(&fakenet_capture::with_rotations(events))?;
+        let out = args.output.clone().unwrap_or_else(|| events.parent().unwrap_or(Path::new(".")).join("decoded"));
+        let index = fakenet_cli::infer::decode(&records, &transforms, args.only.as_deref(), &out)?;
+        let entries = index.as_array().map(Vec::len).unwrap_or(0);
+        let failed = index.as_array().map(|a| a.iter().filter(|e| e["error"].is_string()).count()).unwrap_or(0);
+        println!("Decoded {} of {entries} payloads into {} (index.json lists them)", entries - failed, out.display());
         return Ok(());
     }
     if let Some(events) = &args.indicators {
         let dir = args.output.clone().or_else(|| events.parent().map(PathBuf::from)).unwrap_or_else(|| PathBuf::from("."));
-        let count = fakenet_cli::write_indicators(std::slice::from_ref(events), &dir, None)?;
+        let count = fakenet_cli::write_indicators(&fakenet_capture::with_rotations(events), &dir, None)?;
         println!("Wrote {count} indicators to {}/indicators.{{csv,stix.json,misp.json}}", dir.display());
         return Ok(());
     }
@@ -177,7 +230,20 @@ async fn main() -> anyhow::Result<()> {
     if !config.yara.rules.is_empty() {
         capture.enable_yara(&config.yara.rules, &config.yara.yara, &config.yara.yarac).context("[yara]")?;
     }
-    let tls = Arc::new(TlsAuthority::generate()?);
+    let tls = Arc::new(match (&config.nucleus.ca_cert, &config.nucleus.ca_key) {
+        (Some(cert), Some(key)) => {
+            let (tls, created) = TlsAuthority::load_or_create(cert, key).context("[nucleus] ca_cert / ca_key")?;
+            match created {
+                true => tracing::info!("New interception CA saved to {} (install it in the VM once)", cert.display()),
+                false => tracing::info!("Interception CA loaded from {}", cert.display()),
+            }
+            tls
+        }
+        _ => {
+            tracing::warn!("No [nucleus] ca_cert / ca_key: a new interception CA this start; the VM must trust this start's ca.pem");
+            TlsAuthority::generate()?
+        }
+    });
     // Analysts install this in the analysis VM so HTTPS interception is trusted
     let ca_path = capture.dir().join("ca.pem");
     std::fs::write(&ca_path, tls.ca_pem()).with_context(|| format!("writing {}", ca_path.display()))?;
@@ -200,6 +266,11 @@ async fn main() -> anyhow::Result<()> {
         }
         false => None,
     };
+    let manual = config.manual.enabled.then(|| Arc::new(fakenet_listeners::manual::Manual::new(config.manual.clone())));
+    if manual.is_some() {
+        tracing::warn!("Live manual mode: matching requests wait up to {} ms for an answer from the dashboard", config.manual.timeout_ms);
+    }
+    let hooks = (!config.hooks.is_empty()).then(|| Arc::new(fakenet_listeners::hooks::Hooks::new(config.hooks.clone())));
     let link = Link::start(config.link(secret.as_deref()));
     let limits = Arc::new(fakenet_listeners::Limits::new(&config.limits));
     let ctx = Arc::new(Context {
@@ -213,6 +284,8 @@ async fn main() -> anyhow::Result<()> {
         explorer: explorer.clone(),
         limits: limits.clone(),
         known_fingerprints: Arc::new(config.known_fingerprints()?),
+        manual: manual.clone(),
+        hooks: hooks.clone(),
     });
     let server = Server::start(ctx.clone(), config.nucleus.bind, &config.listeners).await?;
     for (name, transport, address) in &server.bound {
@@ -229,6 +302,8 @@ async fn main() -> anyhow::Result<()> {
         capture: capture.clone(),
         explorer: explorer.clone(),
         limits,
+        manual: manual.clone(),
+        hooks: hooks.clone(),
     });
     tracing::info!("dashboard: http://{}/dashboard{}", config.nucleus.health, if secret.is_some() { "?token=<the link secret>" } else { "" });
     let health_task = tokio::spawn(serve_control(health, control));
@@ -277,6 +352,15 @@ async fn main() -> anyhow::Result<()> {
         }
     };
     tracing::info!("shutting down");
+    // Held requests get their proposed answers; paused processes stay paused (safer)
+    if let Some(manual) = &manual {
+        manual.release_all();
+    }
+    if let Some(hooks) = &hooks {
+        for paused in hooks.paused() {
+            tracing::warn!("Still paused by a hook (SIGSTOP): pid {}; resume with `kill -CONT {}`", paused["pid"], paused["pid"]);
+        }
+    }
     health_task.abort();
     drop(server);
     // A failure here must not cost the report, run.json or the indicators: report it, finish

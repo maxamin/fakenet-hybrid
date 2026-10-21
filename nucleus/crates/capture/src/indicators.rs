@@ -222,7 +222,12 @@ pub fn collect(records: &[Value]) -> Vec<Indicator> {
 }
 
 pub fn to_csv(indicators: &[Indicator]) -> String {
-    let quote = |s: &str| if s.contains([',', '"', '\n', '\r']) { format!("\"{}\"", s.replace('"', "\"\"")) } else { s.to_string() };
+    let quote = |s: &str| {
+        // A leading = + - @ (or tab/CR) would make spreadsheets evaluate the sample's text
+        // as a formula: neutralise it the OWASP way, with a leading apostrophe
+        let s = if s.starts_with(['=', '+', '-', '@', '\t', '\r']) { format!("'{s}") } else { s.to_string() };
+        if s.contains([',', '"', '\n', '\r']) { format!("\"{}\"", s.replace('"', "\"\"")) } else { s }
+    };
     let mut csv = String::from("type,value,count,first_seen,protocols,known\n");
     for i in indicators {
         csv.push_str(&format!(
@@ -461,5 +466,15 @@ mod tests {
         let csv = to_csv(&found);
         assert!(csv.starts_with("type,value,count,first_seen,protocols,known\n"));
         assert!(csv.contains("\ndomain,c2.evil.example,3,2026-10-17T01:00:01Z,dns http,\n"), "{csv}");
+    }
+
+    #[test]
+    fn csv_values_cant_become_formulas() {
+        let mut indicator = collect(&records()).remove(0);
+        for (value, cell) in [("=HYPERLINK(\"http://x\")", "\"'=HYPERLINK(\"\"http://x\"\")\""), ("+1", "'+1"), ("@SUM(A1)", "'@SUM(A1)"), ("c2.example", "c2.example")] {
+            indicator.value = value.into();
+            let csv = to_csv(std::slice::from_ref(&indicator));
+            assert_eq!(csv.lines().nth(1).unwrap().split_once(',').unwrap().1.rsplitn(5, ',').last().unwrap(), cell, "{csv}");
+        }
     }
 }

@@ -24,3 +24,13 @@ th { color: var(--muted); font-weight: 600; }
 td.details { font-family: ui-monospace, monospace; font-size: 12px; }
 th:nth-child(1) { width: 90px; } th:nth-child(2) { width: 130px; } th:nth-child(3) { width: 80px; } th:nth-child(5) { width: 140px; }
 @media (max-width: 700px) { th:nth-child(4), td:nth-child(4), th:nth-child(5), td:nth-child(5) { display: none; } }
+#manual { display: grid; gap: 12px; margin-bottom: 16px; }
+.held { border-color: var(--accent); }
+.held .request { font-weight: 600; margin: 4px 0; overflow-wrap: anywhere; }
+.held pre.payload { background: var(--code); padding: 8px; border-radius: 4px; max-height: 200px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; margin: 6px 0; }
+.held textarea { width: 100%; font: 12px ui-monospace, monospace; background: var(--code); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 6px; }
+.buttons { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 6px; }
+button { font: inherit; padding: 3px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--fg); cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+ul.paused { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px 8px 8px 28px; margin: 0 0 16px; }
+ul.paused button { margin-left: 8px; }

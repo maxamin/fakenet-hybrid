@@ -43,6 +43,14 @@ impl Nucleus {
     }
 
     pub async fn start_full(name: &str, link: LinkConfig, listeners: &[ListenerConfig], defaults: Defaults, explorer: Option<Arc<fakenet_explorer::Explorer>>, limits: LimitsConfig) -> Nucleus {
+        Nucleus::start_interactive(name, link, listeners, defaults, explorer, limits, None, None).await
+    }
+
+    #[allow(clippy::too_many_arguments, dead_code)]
+    pub async fn start_interactive(
+        name: &str, link: LinkConfig, listeners: &[ListenerConfig], defaults: Defaults, explorer: Option<Arc<fakenet_explorer::Explorer>>, limits: LimitsConfig,
+        manual: Option<Arc<fakenet_listeners::manual::Manual>>, hooks: Option<Arc<fakenet_listeners::hooks::Hooks>>,
+    ) -> Nucleus {
         let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("listeners-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         let ca = Arc::new(TlsAuthority::generate().unwrap());
@@ -57,6 +65,8 @@ impl Nucleus {
             explorer,
             limits: Arc::new(fakenet_listeners::Limits::new(&limits)),
             known_fingerprints: Default::default(),
+            manual,
+            hooks,
         });
         let server = Server::start(ctx, "127.0.0.1".parse().unwrap(), listeners).await.unwrap();
         Nucleus { server, dir, ca }

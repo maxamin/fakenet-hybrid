@@ -84,11 +84,13 @@ pub struct HttpCustom {
 
 impl HttpCustom {
     /// FakeNet-NG's matching: hosts case-insensitively (with or without the port), URIs as
-    /// suffixes; both must match when both are configured
+    /// suffixes of the target or of its path (so `/gate.php` matches `/gate.php?id=1`);
+    /// both must match when both are configured
     pub fn matches(&self, host: &str, uri: &str) -> bool {
         let host = host.trim().to_ascii_lowercase();
         let host_match = self.hosts.contains(&host) || host.split_once(':').is_some_and(|(name, _)| self.hosts.iter().any(|h| h == name));
-        let uri_match = self.uris.iter().any(|u| uri.ends_with(u.as_str()));
+        let path = uri.split(['?', '#']).next().unwrap_or(uri);
+        let uri_match = self.uris.iter().any(|u| uri.ends_with(u.as_str()) || path.ends_with(u.as_str()));
         if !self.hosts.is_empty() && !self.uris.is_empty() { host_match && uri_match } else { host_match || uri_match }
     }
 }
@@ -236,20 +238,30 @@ pub async fn run_http_provider(provider: &Path, method: &str, target: &str, head
         "method": method, "target": target, "version": "HTTP/1.1", "headers": headers,
         "body": fakenet_schema::encode_base64(body), "peer_host": peer.ip().to_string(), "peer_port": peer.port(),
     });
-    let mut child = provider_command("http", provider)
+    let child = provider_command("http", provider)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .context("running python3 for an HttpDynamic provider")?;
-    let mut stdin = child.stdin.take().expect("piped");
-    stdin.write_all(input.to_string().as_bytes()).await?;
-    drop(stdin);
-    let output = tokio::time::timeout(PROVIDER_TIMEOUT, child.wait_with_output()).await.map_err(|_| anyhow!("provider {} timed out", provider.display()))??;
+    let output = exchange(child, input.to_string().into_bytes(), PROVIDER_TIMEOUT).await.map_err(|_| anyhow!("provider {} timed out", provider.display()))??;
     if !output.status.success() {
         bail!("provider {} failed: {}", provider.display(), String::from_utf8_lossy(&output.stderr).trim());
     }
     Ok(output.stdout)
+}
+
+/// Writes `input` to the child's stdin while collecting its output, all within `timeout`:
+/// a provider that never reads its input can't hold the session (dropping the child kills it)
+async fn exchange(mut child: tokio::process::Child, input: Vec<u8>, timeout: Duration) -> Result<std::io::Result<std::process::Output>, tokio::time::error::Elapsed> {
+    let mut stdin = child.stdin.take().expect("piped");
+    // Concurrently: a provider that writes before reading would otherwise deadlock on a full pipe
+    let writer = tokio::spawn(async move {
+        let _ = stdin.write_all(&input).await;
+    });
+    let output = tokio::time::timeout(timeout, child.wait_with_output()).await;
+    writer.abort();
+    output
 }
 
 /// Hands a TCP connection to a TcpDynamic provider (its socket is fd 3), until either side
@@ -369,8 +381,26 @@ mod tests {
         let custom = parse_http(&sections[0], Path::new(".")).unwrap();
         assert!(custom.matches("C2.example:8080", "/x/gate.php"));
         assert!(!custom.matches("c2.example", "/other"));
+        assert!(custom.matches("c2.example", "/gate.php?id=1&x=/y")); // BUG-14: the path matches
+        assert!(!custom.matches("c2.example", "/gate.php.bak?id=1"));
         assert!(matches!(&custom.response, HttpResponse::Static { text, .. } if text == "hi\r\n"));
         assert!(replace_date(b"Date: <RAW-DATE>").ends_with(b" GMT"));
+    }
+
+    #[tokio::test]
+    async fn a_provider_that_never_reads_its_input_times_out() {
+        // Sleeps without reading: a 1 MiB request can't fit in the pipe, so the write blocks
+        let child = tokio::process::Command::new("python3")
+            .args(["-I", "-c", "import time; time.sleep(30)"])
+            .kill_on_drop(true)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        assert!(exchange(child, vec![b'x'; 1 << 20], Duration::from_millis(300)).await.is_err());
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]

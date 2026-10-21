@@ -1,6 +1,8 @@
 //! The nucleus's TOML config, its validation, and the loopback-only health endpoint
 
+pub mod diff;
 pub mod har;
+pub mod infer;
 pub mod import;
 pub mod replay;
 pub mod run;
@@ -43,6 +45,12 @@ pub struct Config {
     pub yara: YaraConfig,
     #[serde(default, rename = "listener")]
     pub listeners: Vec<ListenerConfig>,
+    /// Live manual mode: the analyst answers matching requests from the dashboard
+    #[serde(default)]
+    pub manual: fakenet_listeners::manual::ManualConfig,
+    /// Reverse-engineering hooks (pause, dump, command) on matching events
+    #[serde(default, rename = "hook")]
+    pub hooks: Vec<fakenet_listeners::hooks::HookConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -72,6 +80,11 @@ pub struct NucleusConfig {
     /// Write TLS session secrets to capture_dir/tls-keys.log (NSS key log format), so
     /// Wireshark can decrypt wire.pcap
     pub tls_keylog: bool,
+    /// The interception CA's certificate and private key (PEM). Loaded when both exist,
+    /// created and saved there when neither does, so the VM keeps trusting it across
+    /// restarts. Unset: a new CA at every start
+    pub ca_cert: Option<PathBuf>,
+    pub ca_key: Option<PathBuf>,
 }
 
 impl Default for NucleusConfig {
@@ -89,6 +102,8 @@ impl Default for NucleusConfig {
             wire_capture: false,
             fingerprints: Vec::new(),
             tls_keylog: true,
+            ca_cert: None,
+            ca_key: None,
         }
     }
 }
@@ -158,7 +173,7 @@ impl Config {
         resolve(&mut self.nucleus.capture_dir);
         self.nucleus.fingerprints.iter_mut().for_each(resolve);
         self.yara.rules.iter_mut().for_each(resolve);
-        for path in [&mut self.daemon.secret_file, &mut self.defaults.http.webroot, &mut self.defaults.ftp.root, &mut self.defaults.tftp.root] {
+        for path in [&mut self.nucleus.ca_cert, &mut self.nucleus.ca_key, &mut self.daemon.secret_file, &mut self.defaults.http.webroot, &mut self.defaults.ftp.root, &mut self.defaults.tftp.root] {
             if let Some(path) = path.as_mut() {
                 resolve(path);
             }
@@ -193,6 +208,28 @@ impl Config {
             if !url.is_empty() && !loopback_url(url) {
                 bail!("daemon URLs must point at 127.0.0.1, ::1 or localhost (got {url})");
             }
+        }
+        let ftp = self.listeners.iter().any(|l| matches!(l.protocol, ListenerProtocol::Fixed(fakenet_schema::Protocol::Ftp)) || matches!(l.protocol, ListenerProtocol::Auto(_)));
+        if self.diverter.enabled && ftp && self.defaults.ftp.passive_ports.0 == 0 {
+            bail!("[defaults.ftp] passive_ports = [0, 0] with the diverter on: passive data connections would be diverted to the auto listener; set a range (default [60000, 60010])");
+        }
+        let mut names = std::collections::HashSet::new();
+        for hook in &self.hooks {
+            if !names.insert(hook.name.as_str()) {
+                bail!("[[hook]] names must be unique ({} appears twice)", hook.name);
+            }
+            if hook.actions.is_empty() {
+                bail!("[[hook]] {}: actions is empty (pause, dump, command)", hook.name);
+            }
+            if hook.actions.contains(&fakenet_listeners::hooks::HookAction::Command) && hook.command.is_empty() {
+                bail!("[[hook]] {}: the command action needs command = [\"program\", \"arg\", ...]", hook.name);
+            }
+        }
+        if self.manual.enabled && self.manual.timeout_ms == 0 {
+            bail!("[manual] timeout_ms must be > 0");
+        }
+        if self.nucleus.ca_cert.is_some() != self.nucleus.ca_key.is_some() {
+            bail!("nucleus: set both ca_cert and ca_key, or neither");
         }
         if self.daemon.deadline_ms == 0 || self.daemon.backoff_initial_ms == 0 || self.daemon.backoff_max_ms < self.daemon.backoff_initial_ms {
             bail!("daemon: deadline_ms and backoff_initial_ms must be > 0, and backoff_max_ms >= backoff_initial_ms");
@@ -299,7 +336,7 @@ pub fn write_report(event_files: &[PathBuf], output: &Path) -> anyhow::Result<()
     std::fs::write(output, fakenet_capture::report::render_with_map(&records, map.as_ref())).with_context(|| format!("writing {}", output.display()))
 }
 
-fn read_records(event_files: &[PathBuf]) -> anyhow::Result<Vec<serde_json::Value>> {
+pub fn read_records(event_files: &[PathBuf]) -> anyhow::Result<Vec<serde_json::Value>> {
     let mut records = Vec::new();
     for file in event_files {
         let text = std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
@@ -390,6 +427,8 @@ pub struct Control {
     pub capture: Arc<fakenet_capture::Capture>,
     pub explorer: Option<Arc<fakenet_explorer::Explorer>>,
     pub limits: Arc<fakenet_listeners::Limits>,
+    pub manual: Option<Arc<fakenet_listeners::manual::Manual>>,
+    pub hooks: Option<Arc<fakenet_listeners::hooks::Hooks>>,
 }
 
 const DASHBOARD_HTML: &str = include_str!("dashboard/index.html");
@@ -402,6 +441,8 @@ const DASHBOARD_CSP: &str = "default-src 'none'; script-src 'self'; style-src 's
 /// - `GET /health`: "ok"; with the secret, the daemon link's state and the listeners
 /// - `GET /dashboard?token=SECRET`: sets a cookie and redirects; `/dashboard` is the live view
 /// - `GET /api/records?after=N`, `GET /api/summary`: the dashboard's data
+/// - `GET /api/manual`, `GET /api/paused`: requests held for the analyst, processes paused
+///   by hooks; answered with the POSTs in `control_post`
 pub async fn serve_control(socket: TcpListener, control: Arc<Control>) {
     loop {
         let Ok((stream, _)) = socket.accept().await else { continue };
@@ -409,11 +450,75 @@ pub async fn serve_control(socket: TcpListener, control: Arc<Control>) {
         tokio::spawn(async move {
             let service = hyper::service::service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
                 let control = control.clone();
-                async move { Ok::<_, std::convert::Infallible>(control_response(&control, &request)) }
+                async move {
+                    let response = match request.method() == hyper::Method::POST {
+                        true => control_post(&control, request).await,
+                        false => control_response(&control, &request),
+                    };
+                    Ok::<_, std::convert::Infallible>(response)
+                }
             });
             let _ = hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(stream), service).await;
         });
     }
+}
+
+/// The largest body the control server reads (a manual answer)
+const MAX_CONTROL_BODY: usize = 16 * 1024 * 1024;
+
+fn plain_response(status: StatusCode, content_type: &str, body: String) -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(status)
+        .header("content-type", content_type)
+        .header("cache-control", "no-store")
+        .header("x-content-type-options", "nosniff")
+        .header("referrer-policy", "no-referrer")
+        .header("content-security-policy", DASHBOARD_CSP)
+        .body(Full::new(Bytes::from(body)))
+        .expect("valid response")
+}
+
+/// The analyst's actions (authenticated, JSON only, which a cross-site form can't send):
+/// - `POST /api/manual/<id>`: answer a held request (see `manual::parse_verdict`)
+/// - `POST /api/paused/<pid>/resume`: resume a process a hook paused
+async fn control_post(control: &Control, request: hyper::Request<hyper::body::Incoming>) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt as _;
+    let error = |status: StatusCode, message: &str| plain_response(status, "application/json", json!({ "error": message }).to_string());
+    if !authorized(control, &request) {
+        return error(StatusCode::UNAUTHORIZED, "unauthorized");
+    }
+    let json_body = request.headers().get("content-type").and_then(|v| v.to_str().ok()).is_some_and(|v| v.starts_with("application/json"));
+    if !json_body {
+        return error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "send application/json");
+    }
+    let path = request.uri().path().to_string();
+    let body = match http_body_util::Limited::new(request.into_body(), MAX_CONTROL_BODY).collect().await {
+        Ok(body) => body.to_bytes(),
+        Err(_) => return error(StatusCode::PAYLOAD_TOO_LARGE, "body too large"),
+    };
+    let body: serde_json::Value = if body.is_empty() { json!({}) } else {
+        match serde_json::from_slice(&body) {
+            Ok(value) => value,
+            Err(e) => return error(StatusCode::BAD_REQUEST, &format!("invalid JSON: {e}")),
+        }
+    };
+    if let Some(id) = path.strip_prefix("/api/manual/").and_then(|id| id.parse::<u64>().ok()) {
+        let Some(manual) = &control.manual else { return error(StatusCode::NOT_FOUND, "live manual mode is off") };
+        return match fakenet_listeners::manual::parse_verdict(&body).map(|verdict| manual.resolve(id, verdict)) {
+            Ok(true) => plain_response(StatusCode::OK, "application/json", r#"{"ok":true}"#.into()),
+            Ok(false) => error(StatusCode::GONE, "not held any more (answered or timed out)"),
+            Err(message) => error(StatusCode::BAD_REQUEST, &message),
+        };
+    }
+    if let Some(pid) = path.strip_prefix("/api/paused/").and_then(|rest| rest.strip_suffix("/resume")).and_then(|pid| pid.parse::<u32>().ok()) {
+        let Some(hooks) = &control.hooks else { return error(StatusCode::NOT_FOUND, "no hooks configured") };
+        return match hooks.resume(pid) {
+            Ok(true) => plain_response(StatusCode::OK, "application/json", r#"{"ok":true}"#.into()),
+            Ok(false) => error(StatusCode::NOT_FOUND, "no hook paused that process"),
+            Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+        };
+    }
+    error(StatusCode::NOT_FOUND, "not found")
 }
 
 fn query_param<'a>(query: &'a str, name: &str) -> Option<&'a str> {
@@ -475,7 +580,7 @@ fn control_response(control: &Control, request: &hyper::Request<hyper::body::Inc
         }
         "/dashboard.js" => respond(StatusCode::OK, "text/javascript; charset=utf-8", DASHBOARD_JS.to_string()),
         "/dashboard.css" => respond(StatusCode::OK, "text/css; charset=utf-8", DASHBOARD_CSS.to_string()),
-        "/api/records" | "/api/summary" if !authorized => respond(StatusCode::UNAUTHORIZED, "application/json", r#"{"error":"unauthorized"}"#.into()),
+        "/api/records" | "/api/summary" | "/api/manual" | "/api/paused" if !authorized => respond(StatusCode::UNAUTHORIZED, "application/json", r#"{"error":"unauthorized"}"#.into()),
         "/api/records" => {
             let after = query_param(query, "after").and_then(|v| v.parse().ok()).unwrap_or(0);
             let limit = query_param(query, "limit").and_then(|v| v.parse().ok()).unwrap_or(1000usize).min(5000);
@@ -483,6 +588,15 @@ fn control_response(control: &Control, request: &hyper::Request<hyper::body::Inc
             let records: Vec<_> = records.into_iter().map(|(seq, record)| json!({ "seq": seq, "record": record })).collect();
             json_response(json!({ "latest": latest, "records": records }))
         }
+        "/api/manual" => json_response(json!({
+            "enabled": control.manual.is_some(),
+            "timeout_ms": control.manual.as_ref().map(|m| m.config().timeout_ms),
+            "pending": control.manual.as_ref().map(|m| m.pending()).unwrap_or_default(),
+        })),
+        "/api/paused" => json_response(json!({
+            "hooks": control.hooks.is_some(),
+            "paused": control.hooks.as_ref().map(|h| h.paused()).unwrap_or_default(),
+        })),
         "/api/summary" => {
             let explorer = control.explorer.as_ref().map(|e| {
                 let map = e.map();
@@ -543,5 +657,14 @@ mod tests {
         assert!(parse("").is_err()); // no listeners
         assert!(parse(&format!("{listener}{listener}")).is_err()); // duplicate
         assert!(parse(&format!("bogus = 1\n{listener}")).is_err());
+    }
+
+    #[test]
+    fn diverting_ftp_needs_a_passive_range() {
+        let ftp = "[diverter]\nenabled = true\n[[listener]]\nname = \"ftp\"\nprotocol = \"ftp\"\nport = 21\n[[listener]]\nname = \"a\"\nprotocol = \"auto\"\nport = 1337\n[[listener]]\nname = \"u\"\nprotocol = \"auto\"\ntransport = \"udp\"\nport = 1338\n";
+        let config = parse(ftp).unwrap();
+        assert_eq!(config.plan().passive_ports, Some((60000, 60010))); // The default range
+        assert!(parse(&format!("[defaults.ftp]\npassive_ports = [0, 0]\n{ftp}")).is_err());
+        assert!(parse(&format!("[nucleus]\nca_cert = \"ca.pem\"\n{ftp}")).is_err()); // ca_key missing
     }
 }

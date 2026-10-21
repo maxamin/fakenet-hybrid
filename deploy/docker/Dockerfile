@@ -35,6 +35,7 @@ COPY --from=daemon /src/daemon/target/lib ./daemon/lib
 COPY daemon/routes ./routes
 COPY nucleus/config/default-files ./config/default-files
 COPY nucleus/config/fingerprints ./config/fingerprints
+COPY nucleus/config/hooks ./config/hooks
 COPY deploy/docker/fakenet.container.toml ./config/fakenet.toml
 COPY deploy/docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN mkdir -p capture audit && chown -R fakenet:fakenet /opt/fakenet && chmod +x /usr/local/bin/entrypoint.sh

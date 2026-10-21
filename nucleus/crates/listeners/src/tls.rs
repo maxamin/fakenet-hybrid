@@ -1,4 +1,4 @@
-//! TLS termination: a per-run certificate authority that mints a certificate for whatever
+//! TLS termination: a certificate authority (new per start, or saved and reused) that mints a certificate for whatever
 //! hostname each client asks for (SNI). Install the CA (written to the output directory) in
 //! the analysis VM, and clients see valid certificates.
 
@@ -51,23 +51,78 @@ impl std::fmt::Debug for TlsAuthority {
 }
 
 impl TlsAuthority {
+    /// A new CA, in memory only (see `load_or_create` to keep one across restarts)
     pub fn generate() -> Result<TlsAuthority> {
         let mut params = CertificateParams::default();
         params.distinguished_name.push(DnType::CommonName, "FakeNet Hybrid CA");
         params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign, KeyUsagePurpose::DigitalSignature];
+        // Issued well before the oldest leaf certificate (up to 200 days back), and valid for
+        // years, so a saved CA outlives many restarts
+        let random = random_bytes::<2>();
         let now = OffsetDateTime::now_utc();
-        params.not_before = now - Duration::days(1);
-        params.not_after = now + Duration::days(365);
+        params.not_before = now - Duration::days(730 + i64::from(u16::from_le_bytes(random) % 365));
+        params.not_after = now + Duration::days(3650);
         let key = KeyPair::generate()?;
         let cert = params.self_signed(&key)?;
-        Ok(TlsAuthority {
-            ca_der: cert.der().clone(),
-            ca_pem: cert.pem(),
-            issuer: Issuer::new(params, key),
-            cache: Mutex::new(HashMap::new()),
-            key_log: OnceLock::new(),
-        })
+        Ok(TlsAuthority::new(cert.der().clone(), cert.pem(), Issuer::new(params, key)))
+    }
+
+    /// The CA saved in `cert_path` and `key_path` (PEM), or, when neither exists, a new one
+    /// saved there (the key readable by the owner only). The analysis VM then trusts the same
+    /// CA across restarts. Returns whether it was created.
+    pub fn load_or_create(cert_path: &Path, key_path: &Path) -> Result<(TlsAuthority, bool)> {
+        match (cert_path.exists(), key_path.exists()) {
+            (true, true) => Ok((TlsAuthority::load(cert_path, key_path)?, false)),
+            (false, false) => {
+                let authority = TlsAuthority::generate()?;
+                authority.save(cert_path, key_path)?;
+                Ok((authority, true))
+            }
+            (true, false) => Err(anyhow!("{} exists but its key {} doesn't: restore the key, or delete both to make a new CA", cert_path.display(), key_path.display())),
+            (false, true) => Err(anyhow!("{} exists but its certificate {} doesn't: restore it, or delete both to make a new CA", key_path.display(), cert_path.display())),
+        }
+    }
+
+    fn load(cert_path: &Path, key_path: &Path) -> Result<TlsAuthority> {
+        use rustls::pki_types::pem::PemObject as _;
+        let key_pem = std::fs::read_to_string(key_path).map_err(|e| anyhow!("reading {}: {e}", key_path.display()))?;
+        let key = KeyPair::from_pem(&key_pem).map_err(|e| anyhow!("{}: not a PEM private key ({e})", key_path.display()))?;
+        let ca_der = CertificateDer::from_pem_file(cert_path).map_err(|e| anyhow!("{}: no PEM certificate ({e})", cert_path.display()))?;
+        let (_, cert) = x509_parser::parse_x509_certificate(ca_der.as_ref()).map_err(|e| anyhow!("{}: {e}", cert_path.display()))?;
+        if !cert.is_ca() {
+            return Err(anyhow!("{} is not a CA certificate", cert_path.display()));
+        }
+        if cert.public_key().raw != rcgen::PublicKeyData::subject_public_key_info(&key).as_slice() {
+            return Err(anyhow!("{} is not the key of {}", key_path.display(), cert_path.display()));
+        }
+        let ca_pem = pem_certificate(&ca_der);
+        let issuer = Issuer::from_ca_cert_der(&ca_der, key).map_err(|e| anyhow!("{}: {e}", cert_path.display()))?;
+        Ok(TlsAuthority::new(ca_der, ca_pem, issuer))
+    }
+
+    fn save(&self, cert_path: &Path, key_path: &Path) -> Result<()> {
+        for path in [cert_path, key_path] {
+            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                std::fs::create_dir_all(parent).map_err(|e| anyhow!("creating {}: {e}", parent.display()))?;
+            }
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let written = options.open(key_path).and_then(|mut file| file.write_all(self.issuer.key().serialize_pem().as_bytes()));
+        written.map_err(|e| anyhow!("writing {}: {e}", key_path.display()))?;
+        if let Err(e) = std::fs::write(cert_path, &self.ca_pem) {
+            // Never leave a key without its certificate: the next start would refuse it
+            let _ = std::fs::remove_file(key_path);
+            return Err(anyhow!("writing {}: {e}", cert_path.display()));
+        }
+        Ok(())
+    }
+
+    fn new(ca_der: CertificateDer<'static>, ca_pem: String, issuer: Issuer<'static, KeyPair>) -> TlsAuthority {
+        TlsAuthority { issuer, ca_der, ca_pem, cache: Mutex::new(HashMap::new()), key_log: OnceLock::new() }
     }
 
     /// Appends every TLS session's secrets (TLS over TCP and QUIC) to `path`, for
@@ -153,6 +208,13 @@ impl TlsAuthority {
     }
 }
 
+fn pem_certificate(der: &CertificateDer<'_>) -> String {
+    use base64::Engine as _;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(der.as_ref());
+    let lines: Vec<&str> = encoded.as_bytes().chunks(64).map(|line| std::str::from_utf8(line).expect("base64 is ASCII")).collect();
+    format!("-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n", lines.join("\n"))
+}
+
 pub(crate) fn random_bytes<const N: usize>() -> [u8; N] {
     use rustls::crypto::ring::default_provider;
     let mut out = [0u8; N];
@@ -210,5 +272,48 @@ mod tests {
         assert!((30..=200).contains(&age_days), "issued {age_days} days ago");
         assert!(validity.not_after.timestamp() > now + 86400 * 20);
         assert!(cert.raw_serial().len() >= 15);
+    }
+
+    #[test]
+    fn the_ca_predates_its_leaf_certificates() {
+        let ca = TlsAuthority::generate().unwrap();
+        let (_, root) = x509_parser::parse_x509_certificate(ca.ca_der().as_ref()).unwrap();
+        for host in ["a.example", "b.example", "c.example"] {
+            let der = ca.certificate_for(host).unwrap().cert[0].clone();
+            let (_, leaf) = x509_parser::parse_x509_certificate(der.as_ref()).unwrap();
+            assert!(root.validity().not_before < leaf.validity().not_before);
+        }
+    }
+
+    #[test]
+    fn a_saved_ca_is_reused_across_starts() {
+        let dir = std::env::temp_dir().join(format!("fakenet-ca-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (cert, key) = (dir.join("ca/ca.pem"), dir.join("ca/ca.key"));
+        let (first, created) = TlsAuthority::load_or_create(&cert, &key).unwrap();
+        assert!(created);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(std::fs::metadata(&key).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        let (second, created) = TlsAuthority::load_or_create(&cert, &key).unwrap();
+        assert!(!created);
+        assert_eq!(first.ca_der(), second.ca_der());
+        assert_eq!(first.ca_pem(), second.ca_pem());
+
+        // Leaves minted by the reloaded CA chain to the saved certificate
+        let leaf = second.certificate_for("c2.example").unwrap().cert[0].clone();
+        let (_, leaf) = x509_parser::parse_x509_certificate(leaf.as_ref()).unwrap();
+        let (_, root) = x509_parser::parse_x509_certificate(first.ca_der().as_ref()).unwrap();
+        assert_eq!(leaf.issuer(), root.subject());
+        leaf.verify_signature(Some(root.public_key())).unwrap();
+
+        // A key without its certificate, or a key that isn't the certificate's, is refused
+        std::fs::remove_file(&cert).unwrap();
+        assert!(TlsAuthority::load_or_create(&cert, &key).is_err());
+        std::fs::write(&cert, TlsAuthority::generate().unwrap().ca_pem()).unwrap();
+        assert!(TlsAuthority::load_or_create(&cert, &key).unwrap_err().to_string().contains("is not the key"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

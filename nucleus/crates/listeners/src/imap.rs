@@ -42,6 +42,62 @@ pub fn parse_arguments(input: &str) -> Vec<String> {
     args
 }
 
+/// The largest literal accepted (an APPEND'ed message, say); past it the connection closes
+const MAX_LITERAL: usize = 1 << 20;
+/// Literals in one command (LOGIN has two)
+const MAX_LITERALS: usize = 16;
+
+/// A `{n}` or `{n+}` at the end of a line: the literal's length, and whether the client waits
+/// for a `+` continuation (non-synchronizing literals, RFC 7888, don't)
+fn trailing_literal(line: &str) -> Option<(usize, bool)> {
+    let inner = &line[line.rfind('{')? + 1..line.strip_suffix('}')?.len()];
+    let (digits, synchronizing) = match inner.strip_suffix('+') {
+        Some(digits) => (digits, false),
+        None => (inner, true),
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((digits.parse().ok()?, synchronizing))
+}
+
+/// A literal's bytes as a quoted string, so `parse_arguments` reads it as one argument
+fn quote(data: &[u8]) -> String {
+    let mut quoted = String::from("\"");
+    for c in String::from_utf8_lossy(data).chars() {
+        if c == '"' || c == '\\' {
+            quoted.push('\\');
+        }
+        quoted.push(c);
+    }
+    quoted.push('"');
+    quoted
+}
+
+/// The next command, with its literals read (sending `+` continuations as needed) and
+/// inlined as quoted strings
+async fn read_command(lines: &mut Lines, session: &Session) -> anyhow::Result<Option<String>> {
+    let Some(mut line) = lines.read(session).await? else { return Ok(None) };
+    let mut count = 0;
+    while let Some((length, synchronizing)) = trailing_literal(&line) {
+        count += 1;
+        if length > MAX_LITERAL || count > MAX_LITERALS {
+            let tag = line.split(' ').next().unwrap_or("*").to_string();
+            lines.send(session, format!("{tag} BAD Literal too large\r\n").as_bytes()).await?;
+            anyhow::bail!("IMAP literal of {length} bytes (or more than {MAX_LITERALS} literals)");
+        }
+        if synchronizing {
+            lines.send(session, b"+ Ready for literal data\r\n").await?;
+        }
+        let data = lines.read_exact(session, length).await?;
+        line.truncate(line.rfind('{').unwrap_or(line.len()));
+        line.push_str(&quote(&data));
+        // The command continues on the line after the literal
+        line.push_str(&lines.read(session).await?.unwrap_or_default());
+    }
+    Ok(Some(line))
+}
+
 fn decode_plain(response: &str) -> Option<(String, String)> {
     let decoded = fakenet_schema::decode_base64(response.trim()).ok()?;
     let mut fields = decoded.split(|&b| b == 0).skip(1);
@@ -51,7 +107,7 @@ fn decode_plain(response: &str) -> Option<(String, String)> {
 pub async fn handle(stream: BoxStream, mut session: Session) -> anyhow::Result<()> {
     let mut lines = Lines::new(stream);
     lines.send(&session, b"* OK [CAPABILITY IMAP4rev1 IMAP4rev2 STARTTLS AUTH=PLAIN] FakeNet IMAP ready\r\n").await?;
-    while let Some(line) = lines.read(&session).await? {
+    while let Some(line) = read_command(&mut lines, &session).await? {
         let mut parts = line.splitn(3, ' ');
         let tag = parts.next().unwrap_or("*").to_string();
         let mut command = parts.next().unwrap_or("").to_ascii_uppercase();
@@ -157,5 +213,15 @@ mod tests {
         assert_eq!(parse_arguments(r#""al ice" "p\"w" atom"#), ["al ice", "p\"w", "atom"]);
         assert!(fetch("a", "1 (BODY.PEEK[])").contains(&format!("BODY[] {{{}}}", MESSAGE.len())));
         assert!(!fetch("a", "1 (FLAGS)").contains("BODY"));
+    }
+
+    #[test]
+    fn recognises_literals() {
+        assert_eq!(trailing_literal("a LOGIN {5}"), Some((5, true)));
+        assert_eq!(trailing_literal("a LOGIN \"alice\" {12+}"), Some((12, false)));
+        assert_eq!(trailing_literal("a LOGIN alice {x}"), None);
+        assert_eq!(trailing_literal("a LOGIN {}"), None);
+        assert_eq!(trailing_literal("a NOOP"), None);
+        assert_eq!(parse_arguments(&format!("{} {}", quote(b"al\"ice"), quote(b"p\\w d"))), ["al\"ice", "p\\w d"]);
     }
 }

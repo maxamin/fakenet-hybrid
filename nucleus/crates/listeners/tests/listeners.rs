@@ -5,6 +5,7 @@ mod common;
 
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
+use std::sync::Arc;
 
 use common::{fake_daemon, listener, stopped_daemon, wait_connected, Nucleus};
 use fakenet_link::LinkConfig;
@@ -120,8 +121,17 @@ async fn auto_listener_sniffs_and_unwraps_tls() {
     // Unrecognized bytes get the raw catch-all
     assert_eq!(raw_exchange(auto, b"\xde\xad\xbe\xef").await, b"\xde\xad\xbe\xef");
 
+    // BUG-08: a request written in pieces is still recognised as HTTP
+    let mut split = TcpStream::connect(auto).await.unwrap();
+    split.write_all(b"GE").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    split.write_all(b"T /x.txt HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n").await.unwrap();
+    let mut page = Vec::new();
+    split.read_to_end(&mut page).await.unwrap();
+    assert!(page.starts_with(b"HTTP/1.1 200 OK"), "{}", String::from_utf8_lossy(&page));
+
     let detected: Vec<_> = nucleus.kinds("detected").iter().map(|d| (d["detected"].as_str().unwrap().to_string(), d["tls"].as_bool().unwrap())).collect();
-    assert_eq!(detected, [("http".to_string(), false), ("http".to_string(), true), ("raw".to_string(), false)]);
+    assert_eq!(detected, [("http".to_string(), false), ("http".to_string(), true), ("raw".to_string(), false), ("http".to_string(), false)]);
     let handshake = nucleus.kinds("tls_handshake");
     assert_eq!(handshake[0]["sni"], "c2.example");
     // The client's fingerprints (rustls: TLS 1.3, SNI, no ALPN asked)
@@ -280,4 +290,32 @@ async fn memory_budget_refuses_oversized_payloads() {
     assert!(bad[0]["error"].as_str().unwrap().contains("memory budget"), "{bad:?}");
     // The budget is released: a small request still works
     assert!(http_get(nucleus.address("http"), "/small.txt").await.starts_with("HTTP/1.1 200"));
+}
+
+#[tokio::test]
+async fn live_manual_mode_lets_the_analyst_answer() {
+    use fakenet_listeners::manual::{Manual, ManualConfig, Verdict};
+    let manual = Arc::new(Manual::new(ManualConfig { enabled: true, timeout_ms: 10_000, filter: fakenet_listeners::event_filter::EventFilter { protocols: vec![Protocol::Http], ..Default::default() } }));
+    let listeners = [listener("http", Some(Protocol::Http), Transport::Tcp, false), listener("raw", Some(Protocol::Raw), Transport::Tcp, false)];
+    let nucleus = Nucleus::start_interactive("manual", LinkConfig::default(), &listeners, fakenet_listeners::Defaults::default(), None, fakenet_listeners::LimitsConfig::default(), Some(manual.clone()), None).await;
+    let address = nucleus.address("http");
+    let client = tokio::spawn(async move { http_get(address, "/gate.php").await });
+    let held = loop {
+        if let Some(held) = manual.pending().pop() {
+            break held;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    // The analyst sees the request and the built-in answer they could send
+    assert_eq!(held["request"], "GET /gate.php");
+    let proposed = fakenet_schema::decode_base64(held["proposed"].as_str().unwrap()).unwrap();
+    assert!(proposed.starts_with(b"HTTP/1.1 200 OK"), "{}", String::from_utf8_lossy(&proposed));
+    let edited = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\ntask1".to_vec();
+    assert!(manual.resolve(held["id"].as_u64().unwrap(), Verdict::Send { response: edited, close: false }));
+    let page = client.await.unwrap();
+    assert!(page.ends_with("task1"), "{page}");
+    assert_eq!(nucleus.kinds("manual")[0]["verdict"], "send");
+
+    // Raw isn't selected by the filter: answered at once
+    assert_eq!(raw_exchange(nucleus.address("raw"), b"ping").await, b"ping");
 }

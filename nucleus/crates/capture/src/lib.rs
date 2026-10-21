@@ -70,6 +70,22 @@ fn numbered(dir: &Path, name: &str, n: usize) -> PathBuf {
     dir.join(format!("{stem}.{n}.{extension}"))
 }
 
+/// `events` and its rotated siblings (`events.N.jsonl`, oldest first), for reading a whole
+/// capture from the path of its live log
+pub fn with_rotations(events: &Path) -> Vec<PathBuf> {
+    let (Some(dir), Some(name)) = (events.parent(), events.file_name().and_then(|n| n.to_str())) else {
+        return vec![events.to_path_buf()];
+    };
+    let mut rotated: Vec<(usize, PathBuf)> = (1..)
+        .map(|n| (n, numbered(dir, name, n)))
+        .take_while(|(_, path)| path.exists())
+        .collect();
+    rotated.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut files: Vec<PathBuf> = rotated.into_iter().map(|(_, path)| path).collect();
+    files.push(events.to_path_buf());
+    files
+}
+
 /// Shifts name -> name.1 -> name.2 ..., dropping what falls past `keep`
 fn rotate(dir: &Path, name: &str, keep: usize) {
     let _ = std::fs::remove_file(numbered(dir, name, keep.max(1)));
@@ -83,21 +99,60 @@ fn rotate(dir: &Path, name: &str, keep: usize) {
     }
 }
 
+/// What a start writes at the top of a capture folder (ca.pem is rewritten each start)
+fn is_run_output(name: &str) -> bool {
+    let rotated = |stem: &str, extension: &str| {
+        name.strip_prefix(stem).and_then(|r| r.strip_suffix(extension)).is_some_and(|middle| middle.is_empty() || middle.strip_prefix('.').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())))
+    };
+    rotated("events", ".jsonl")
+        || rotated("traffic", ".pcap")
+        || rotated("wire", ".pcap")
+        || ["files", "report.html", "indicators.csv", "indicators.stix.json", "indicators.misp.json", "tls-keys.log", "explorer-map.json"].contains(&name)
+}
+
+/// Moves a previous start's outputs into `previous/<UTC time>/`, so this start neither
+/// overwrites its saved files and pcaps nor mixes its records into this run's report.
+/// Returns where they went (None: nothing recorded yet)
+pub fn archive_previous(dir: &Path) -> Result<Option<PathBuf>> {
+    // Past an empty log, or a pcap holding only its 24-byte header
+    let recorded = |name: &str, empty: u64| std::fs::metadata(dir.join(name)).map(|m| m.len() > empty).unwrap_or(false);
+    let files_saved = std::fs::read_dir(dir.join("files")).map(|mut e| e.next().is_some()).unwrap_or(false);
+    if !recorded("events.jsonl", 0) && !recorded("traffic.pcap", 24) && !files_saved {
+        return Ok(None);
+    }
+    let format = time::macros::format_description!("[year][month][day]-[hour][minute][second]");
+    let stamp = time::OffsetDateTime::now_utc().format(&format).unwrap_or_default();
+    let mut target = dir.join("previous").join(&stamp);
+    let mut n = 1;
+    while target.exists() {
+        n += 1;
+        target = dir.join("previous").join(format!("{stamp}-{n}"));
+    }
+    std::fs::create_dir_all(&target).with_context(|| format!("creating {}", target.display()))?;
+    for entry in std::fs::read_dir(dir)?.flatten() {
+        let name = entry.file_name();
+        if name.to_str().is_some_and(is_run_output) {
+            std::fs::rename(entry.path(), target.join(&name)).with_context(|| format!("moving {} to {}", entry.path().display(), target.display()))?;
+        }
+    }
+    Ok(Some(target))
+}
+
 impl Capture {
     pub fn open(dir: &Path) -> Result<Arc<Capture>> {
         Capture::open_with(dir, Limits::default())
     }
 
     pub fn open_with(dir: &Path, limits: Limits) -> Result<Arc<Capture>> {
+        if let Some(previous) = archive_previous(dir)? {
+            tracing::info!("The previous run's capture moved to {}", previous.display());
+        }
         std::fs::create_dir_all(dir.join("files")).with_context(|| format!("creating {}", dir.display()))?;
         let events = OpenOptions::new().create(true).append(true).open(dir.join("events.jsonl"))?;
         let bytes = events.metadata().map(|m| m.len()).unwrap_or(0);
         let files_bytes = std::fs::read_dir(dir.join("files"))
             .map(|entries| entries.flatten().filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum())
             .unwrap_or(0);
-        if limits.max_pcap_bytes > 0 && dir.join("traffic.pcap").exists() {
-            rotate(dir, "traffic.pcap", limits.keep); // Keep the previous run's capture
-        }
         let pcap = pcap::PcapWriter::create(&dir.join("traffic.pcap"))?;
         Ok(Arc::new(Capture {
             dir: dir.to_path_buf(),
@@ -200,9 +255,19 @@ impl Capture {
             .map(|c| if c.is_ascii_alphanumeric() || ".-_".contains(c) { c } else { '_' })
             .take(100)
             .collect();
-        let n = self.file_counter.fetch_add(1, Ordering::Relaxed);
-        let path = self.dir.join("files").join(format!("{prefix}_{n:06}_{}", if safe.is_empty() { "data" } else { &safe }));
-        std::fs::write(&path, data)?;
+        // create_new: never overwrite a saved payload, whoever wrote it
+        let path = loop {
+            let n = self.file_counter.fetch_add(1, Ordering::Relaxed);
+            let path = self.dir.join("files").join(format!("{prefix}_{n:06}_{}", if safe.is_empty() { "data" } else { &safe }));
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut file) => {
+                    file.write_all(data)?;
+                    break path;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e.into()),
+            }
+        };
         if let Some(scanner) = self.yara.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             scanner.queue(path.clone());
         }
@@ -226,7 +291,8 @@ impl Capture {
         let mut wire = self.wire.lock().unwrap_or_else(|e| e.into_inner());
         if wire.is_none() {
             if self.dir.join("wire.pcap").exists() {
-                rotate(&self.dir, "wire.pcap", self.limits.keep);
+                // Never truncate an earlier capture, whatever `keep` says
+                rotate(&self.dir, "wire.pcap", self.limits.keep.max(1));
             }
             match pcap::PcapWriter::create(&self.dir.join("wire.pcap")) {
                 Ok(writer) => *wire = Some(Pcap { writer, bytes: 24 }),
@@ -322,6 +388,55 @@ mod tests {
         assert_eq!(records[0].1["i"], 15);
         assert!(capture.save_file("t", "a", b"12345").is_ok());
         assert!(capture.save_file("t", "b", b"123456").is_err()); // Over the 10-byte budget
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_second_start_archives_the_first_run() {
+        let dir = std::env::temp_dir().join(format!("fakenet-capture-restart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let limits = Limits { max_events_bytes: 0, max_pcap_bytes: 0, max_files_bytes: 0, keep: 0 };
+        let first = Capture::open_with(&dir, limits.clone()).unwrap();
+        first.log("test", serde_json::json!({ "run": 1 }));
+        let saved = first.save_file("http_body", "/gate.php", b"first run").unwrap();
+        first.udp_datagram("10.0.0.1:1".parse().unwrap(), "10.0.0.2:2".parse().unwrap(), b"x");
+        drop(first);
+        std::fs::write(dir.join("ca.pem"), "kept").unwrap();
+
+        let second = Capture::open_with(&dir, limits).unwrap();
+        second.log("test", serde_json::json!({ "run": 2 }));
+        let saved_again = second.save_file("http_body", "/gate.php", b"second run").unwrap();
+        drop(second);
+
+        // This run's log holds only this run; the first run's outputs are intact in previous/
+        let events = std::fs::read_to_string(dir.join("events.jsonl")).unwrap();
+        assert!(events.contains("\"run\":2") && !events.contains("\"run\":1"));
+        let previous: Vec<PathBuf> = std::fs::read_dir(dir.join("previous")).unwrap().flatten().map(|e| e.path()).collect();
+        assert_eq!(previous.len(), 1);
+        let old = &previous[0];
+        assert!(std::fs::read_to_string(old.join("events.jsonl")).unwrap().contains("\"run\":1"));
+        assert!(std::fs::metadata(old.join("traffic.pcap")).unwrap().len() > 24); // Not truncated (BUG-03)
+        assert_eq!(std::fs::read(old.join("files").join(saved.file_name().unwrap())).unwrap(), b"first run");
+        assert_eq!(std::fs::read(&saved_again).unwrap(), b"second run");
+        assert_eq!(std::fs::read_to_string(dir.join("ca.pem")).unwrap(), "kept");
+
+        // An empty start archives nothing
+        drop(Capture::open_with(&std::env::temp_dir().join(format!("fakenet-capture-empty-{}", std::process::id())), Limits::default()).unwrap());
+        assert!(archive_previous(&std::env::temp_dir().join(format!("fakenet-capture-empty-{}", std::process::id()))).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join(format!("fakenet-capture-empty-{}", std::process::id())));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn with_rotations_lists_oldest_first() {
+        let dir = std::env::temp_dir().join(format!("fakenet-capture-rotations-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["events.jsonl", "events.1.jsonl", "events.2.jsonl"] {
+            std::fs::write(dir.join(name), "").unwrap();
+        }
+        let names: Vec<String> = with_rotations(&dir.join("events.jsonl")).iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["events.2.jsonl", "events.1.jsonl", "events.jsonl"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

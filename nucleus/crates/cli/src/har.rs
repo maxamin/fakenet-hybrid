@@ -51,8 +51,20 @@ pub fn exchanges(har: &Value) -> anyhow::Result<BTreeMap<String, Vec<Vec<u8>>>> 
     Ok(out)
 }
 
+/// A single-quoted Groovy literal that stays on one line: control and line-separator
+/// characters become \uXXXX, so HAR text can't end the string or the YAML block around it
 fn groovy_string(text: &str) -> String {
-    format!("'{}'", text.replace('\\', "\\\\").replace('\'', "\\'"))
+    let mut out = String::from("'");
+    for c in text.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            c if c.is_control() || c == '\u{2028}' || c == '\u{2029}' => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('\'');
+    out
 }
 
 /// The Camel YAML route (`direct:decide-recorded`)
@@ -110,5 +122,13 @@ mod tests {
         let yaml = rules(&har, "test.har").unwrap();
         assert!(yaml.contains("id: decide-recorded") && yaml.contains("'GET c2.example /gate.php': ['"));
         assert!(rules(&serde_json::json!({}), "x").is_err());
+    }
+
+    #[test]
+    fn har_text_cant_break_out_of_the_groovy_string() {
+        assert_eq!(groovy_string("GET c2 /a'b\\c"), "'GET c2 /a\\'b\\\\c'");
+        let injected = groovy_string("GET c2 /x'\n        - to: exec:sh\r\u{2028}");
+        assert!(!injected.contains(['\n', '\r', '\u{2028}']), "{injected}");
+        assert_eq!(injected, "'GET c2 /x\\'\\u000a        - to: exec:sh\\u000d\\u2028'");
     }
 }

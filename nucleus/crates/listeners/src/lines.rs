@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 
 use crate::session::Session;
-use crate::stream::{read_line, read_raw_line, send, BoxStream};
+use crate::stream::{read_line, read_raw_line, read_raw_line_max, send, BoxStream};
 
 pub struct Lines {
     conn: BufReader<BoxStream>,
@@ -30,6 +30,17 @@ impl Lines {
     /// The next line's raw bytes (for protocols with binary in-band data, like Telnet)
     pub async fn read_raw(&mut self, session: &Session) -> io::Result<Option<Vec<u8>>> {
         let line = read_raw_line(&mut self.conn, session.ctx.timeout).await?;
+        if let Some(line) = &line {
+            let mut recorded = line.clone();
+            recorded.push(b'\n');
+            session.client_data(&recorded);
+        }
+        Ok(line)
+    }
+
+    /// The next line's raw bytes, allowing lines of up to `max` bytes (bulk data)
+    pub async fn read_raw_max(&mut self, session: &Session, max: usize) -> io::Result<Option<Vec<u8>>> {
+        let line = read_raw_line_max(&mut self.conn, session.ctx.timeout, max).await?;
         if let Some(line) = &line {
             let mut recorded = line.clone();
             recorded.push(b'\n');

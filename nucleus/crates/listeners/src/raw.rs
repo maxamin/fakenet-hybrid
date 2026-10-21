@@ -45,9 +45,10 @@ pub async fn handle_tcp(mut stream: BoxStream, mut session: Session) -> anyhow::
         };
         let data = buffer[..read].to_vec();
         session.client_data(&data);
-        let action = session.decide(&data, json!({ "bytes": read })).await;
+        let default = default_reply(&session, &data);
+        let action = session.decide_with_default(&data, json!({ "bytes": read }), Some(&default)).await;
         let close = action.as_ref().is_some_and(|a| a.close);
-        let reply = action.and_then(|a| a.response).unwrap_or_else(|| default_reply(&session, &data));
+        let reply = action.and_then(|a| a.response).unwrap_or(default);
         if !reply.is_empty() {
             stream.write_all(&reply).await?;
             stream.flush().await?;
@@ -69,8 +70,9 @@ pub async fn handle_udp(data: &[u8], session: &mut Session, peer: std::net::Sock
         }
         return None;
     }
-    let action = session.decide(data, json!({ "bytes": data.len() })).await;
-    let reply = action.and_then(|a| a.response).unwrap_or_else(|| default_reply(session, data));
+    let default = default_reply(session, data);
+    let action = session.decide_with_default(data, json!({ "bytes": data.len() }), Some(&default)).await;
+    let reply = action.and_then(|a| a.response).unwrap_or(default);
     if reply.is_empty() {
         return None;
     }

@@ -19,6 +19,8 @@ httparse.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
 rcgen.workspace = true
+# Loading a saved CA: checks its key matches and that it is a CA
+x509-parser = "=0.18.1"
 hickory-proto.workspace = true
 quinn.workspace = true
 h3.workspace = true
@@ -30,6 +32,8 @@ anyhow.workspace = true
 tracing.workspace = true
 time.workspace = true
 libc.workspace = true
+# IP_TRANSPARENT sockets for TFTP transfers under diversion (already in the lockfile via tokio)
+socket2 = "=0.6.5"
 md-5.workspace = true
 arc-swap.workspace = true
 tokio-tungstenite.workspace = true
@@ -41,6 +45,5 @@ base64.workspace = true
 fuzzing = []
 
 [dev-dependencies]
-x509-parser = "=0.18.1"
 fakenet-explorer.workspace = true
 hyper-util.workspace = true

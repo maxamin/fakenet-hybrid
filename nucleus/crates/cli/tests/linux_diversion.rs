@@ -70,6 +70,8 @@ async fn diverts_inside_a_network_namespace() {
         explorer: None,
         limits: Default::default(),
         known_fingerprints: Default::default(),
+        manual: None,
+        hooks: None,
     });
     let listeners = [
         listener("http", Some(Protocol::Http), Transport::Tcp, 80),

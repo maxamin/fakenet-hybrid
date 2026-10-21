@@ -89,8 +89,21 @@ pub async fn handle(data: &[u8], session: &mut Session, peer: SocketAddr) -> Opt
     None
 }
 
+/// The transfer's socket (RFC 1350: a new port per transfer). After a REDIRECT the transfer
+/// is a new flow the NAT doesn't rewrite, so it is sent from the original destination
+/// (IP_TRANSPARENT) when the system allows it, else from the address the request arrived at
 async fn bind_transfer(session: &Session, peer: SocketAddr) -> std::io::Result<UdpSocket> {
-    let socket = UdpSocket::bind(SocketAddr::new(session.local.ip(), 0)).await?;
+    let original = session.builder.dst.ip();
+    let socket = match original != session.local.ip() && !original.is_unspecified() {
+        true => match crate::original_dst::bind_transparent(original) {
+            Ok(socket) => socket,
+            Err(e) => {
+                tracing::debug!("TFTP transfer from {original} needs CAP_NET_ADMIN ({e}); replying from {}", session.local.ip());
+                UdpSocket::bind(SocketAddr::new(session.local.ip(), 0)).await?
+            }
+        },
+        false => UdpSocket::bind(SocketAddr::new(session.local.ip(), 0)).await?,
+    };
     socket.connect(peer).await?;
     Ok(socket)
 }

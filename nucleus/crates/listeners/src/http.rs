@@ -180,7 +180,10 @@ pub(crate) async fn answer(session: &mut Session, parts: hyper::http::request::P
         "headers": headers, "body_bytes": body.len(), "saved_body": saved,
     });
 
-    let action = session.decide(&raw, meta).await;
+    // Live manual mode shows the analyst the built-in answer (Custom Responses aren't run
+    // just to preview them: providers have effects)
+    let preview = session.ctx.manual.as_ref().map(|_| serialize(&builtin_default(&defaults, &host, parts.uri.path(), false)));
+    let action = session.decide_with_default(&raw, meta, preview.as_deref()).await;
     let response = match action {
         Some(action) if action.response.is_some() => {
             let close = action.close;
@@ -188,17 +191,13 @@ pub(crate) async fn answer(session: &mut Session, parts: hyper::http::request::P
         }
         other => {
             let close = other.is_some_and(|a| a.close);
-            let check = defaults.connectivity_checks.then(|| connectivity_check(&host, parts.uri.path())).flatten();
             match custom_response(session, &parts, &host, &body).await {
                 Some(response) => response,
-                None if check.is_some() => {
-                    let (status, content_type, content) = check.unwrap_or_default();
-                    session.log("connectivity_check", json!({ "host": host, "path": parts.uri.path() }));
-                    build(StatusCode::from_u16(status).unwrap_or(StatusCode::OK), &[("content-type", content_type)], Bytes::from_static(content.as_bytes()), &server_for(&defaults.server_header, &host), close)
-                }
                 None => {
-                    let (content, content_type) = default_content(parts.uri.path(), defaults.webroot.as_deref());
-                    build(StatusCode::OK, &[("content-type", content_type)], Bytes::from(content), &server_for(&defaults.server_header, &host), close)
+                    if defaults.connectivity_checks && connectivity_check(&host, parts.uri.path()).is_some() {
+                        session.log("connectivity_check", json!({ "host": host, "path": parts.uri.path() }));
+                    }
+                    builtin_default(&defaults, &host, parts.uri.path(), close)
                 }
             }
         }
@@ -272,6 +271,15 @@ pub fn server_for(configured: &str, host: &str) -> String {
         "nginx"
     }
     .to_string()
+}
+
+/// The built-in answer: an OS connectivity check's expected reply, or the default page/file
+fn builtin_default(defaults: &crate::config::HttpDefaults, host: &str, path: &str, close: bool) -> Response<Full<Bytes>> {
+    if let Some((status, content_type, content)) = defaults.connectivity_checks.then(|| connectivity_check(host, path)).flatten() {
+        return build(StatusCode::from_u16(status).unwrap_or(StatusCode::OK), &[("content-type", content_type)], Bytes::from_static(content.as_bytes()), &server_for(&defaults.server_header, host), close);
+    }
+    let (content, content_type) = default_content(path, defaults.webroot.as_deref());
+    build(StatusCode::OK, &[("content-type", content_type)], Bytes::from(content), &server_for(&defaults.server_header, host), close)
 }
 
 fn build(status: StatusCode, headers: &[(&str, &str)], body: Bytes, server: &str, close: bool) -> Response<Full<Bytes>> {

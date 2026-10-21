@@ -144,7 +144,7 @@ pub fn render_with_map(records: &[Value], map: Option<&Value>) -> String {
             }
             "credentials" => {
                 let mut parts = vec![format!("{}:", field(record, "protocol"))];
-                for key in ["username", "password", "mechanism", "apop_digest"] {
+                for key in ["username", "password", "mechanism", "apop_digest", "hash_type", "hash"] {
                     if !record[key].is_null() {
                         parts.push(format!("{key}={}", field(record, key)));
                     }
@@ -287,12 +287,14 @@ mod tests {
             json!({ "kind": "event", "protocol": "http", "tls": true, "meta": { "method": "GET", "path": "/a?<script>", "host": "c2.example" }, "process": { "name": "evil", "pid": 6 } }),
             json!({ "kind": "event", "protocol": "dns", "meta": { "qname": "c2.example", "qtype": "A" } }),
             json!({ "kind": "credentials", "protocol": "ftp", "username": "<img src=x onerror=alert(1)>", "password": "x" }),
+            json!({ "kind": "credentials", "protocol": "smb", "username": "alice", "hash_type": "netntlmv2", "hash": "alice::LAB:1122334455667788:aabb:ccdd" }),
             json!({ "kind": "fallback", "fallback": { "reason": "timeout" } }),
             json!({ "kind": "decision", "route": "c2-gate", "default": false }),
         ];
         let html = render(&records);
         assert!(html.contains("GET https://c2.example/a?&lt;script&gt;"));
         assert!(!html.contains("<script>") && !html.contains("<img"));
+        assert!(html.contains("hash_type=netntlmv2") && html.contains("hash=alice::LAB:1122334455667788:aabb:ccdd"));
         assert!(html.contains("username=&lt;img src=x onerror=alert(1)&gt;"));
         assert!(html.contains("c2.example (A)") && html.contains("timeout") && html.contains("c2-gate"));
         assert!(html.contains("evil (PID 6)") && html.contains("Nucleus &amp; daemon link"));

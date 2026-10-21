@@ -69,6 +69,33 @@ pub fn enable_udp_original_destination(_socket: &tokio::net::UdpSocket) -> std::
     Ok(())
 }
 
+/// A UDP socket bound to `ip` even when it isn't one of ours (IP_TRANSPARENT, which needs
+/// CAP_NET_ADMIN): a new flow, such as a TFTP transfer, then comes from the address the
+/// client REDIRECTed to us thought it was talking to
+#[cfg(target_os = "linux")]
+pub fn bind_transparent(ip: std::net::IpAddr) -> std::io::Result<tokio::net::UdpSocket> {
+    use socket2::{Domain, Socket, Type};
+    use std::os::fd::AsRawFd;
+    let (domain, level, option) = match ip {
+        std::net::IpAddr::V4(_) => (Domain::IPV4, libc::SOL_IP, libc::IP_TRANSPARENT),
+        std::net::IpAddr::V6(_) => (Domain::IPV6, libc::SOL_IPV6, libc::IPV6_TRANSPARENT),
+    };
+    let socket = Socket::new(domain, Type::DGRAM, None)?;
+    let on: libc::c_int = 1;
+    // SAFETY: `on` is a valid c_int of the size passed; the fd is open for the socket's life
+    if unsafe { libc::setsockopt(socket.as_raw_fd(), level, option, (&on as *const libc::c_int).cast(), std::mem::size_of::<libc::c_int>() as libc::socklen_t) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    socket.bind(&SocketAddr::new(ip, 0).into())?;
+    socket.set_nonblocking(true)?;
+    tokio::net::UdpSocket::from_std(socket.into())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn bind_transparent(_ip: std::net::IpAddr) -> std::io::Result<tokio::net::UdpSocket> {
+    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+}
+
 /// One datagram, its sender, and (Linux, after `enable_udp_original_destination`) the local
 /// address it arrived at (after any NAT: see `conntrack_original` for the address before)
 #[cfg(target_os = "linux")]
@@ -408,6 +435,18 @@ fn socket_address(storage: &libc::sockaddr_storage) -> Option<SocketAddr> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn transparent_binds_need_privilege_or_work() {
+        // Root (CAP_NET_ADMIN) may bind a foreign address; anyone else gets an error, which
+        // the TFTP handler answers by replying from its own address
+        let result = bind_transparent("192.0.2.1".parse().unwrap());
+        // SAFETY: geteuid has no preconditions
+        match unsafe { libc::geteuid() } {
+            0 => assert_eq!(result.unwrap().local_addr().unwrap().ip(), "192.0.2.1".parse::<std::net::IpAddr>().unwrap()),
+            _ => assert!(result.is_err()),
+        }
+    }
 
     #[tokio::test]
     async fn reports_where_each_datagram_was_sent() {

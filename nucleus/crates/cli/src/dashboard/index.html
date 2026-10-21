@@ -14,6 +14,14 @@
   <div id="counters" class="muted"></div>
 </header>
 <main>
+  <section id="manual-section" hidden>
+    <div class="toolbar"><h2>Waiting for your answer</h2><span id="manual-info" class="muted"></span></div>
+    <div id="manual"></div>
+  </section>
+  <section id="paused-section" hidden>
+    <div class="toolbar"><h2>Paused by hooks</h2><span class="muted">attach a debugger, then resume</span></div>
+    <ul id="paused" class="paused"></ul>
+  </section>
   <section class="grid">
     <article><h2>DNS names</h2><ul id="dns"></ul></article>
     <article><h2>HTTP requests</h2><ul id="http"></ul></article>

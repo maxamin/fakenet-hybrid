@@ -21,6 +21,11 @@ pub async fn read_line<R: AsyncBufRead + Unpin>(reader: &mut R, idle: Duration) 
 
 /// One line's raw bytes (without its LF; a CR is kept), bounded like `read_line`
 pub async fn read_raw_line<R: AsyncBufRead + Unpin>(reader: &mut R, idle: Duration) -> io::Result<Option<Vec<u8>>> {
+    read_raw_line_max(reader, idle, MAX_LINE).await
+}
+
+/// One line's raw bytes, at most `max` of them (for bulk data such as SMTP DATA)
+pub async fn read_raw_line_max<R: AsyncBufRead + Unpin>(reader: &mut R, idle: Duration, max: usize) -> io::Result<Option<Vec<u8>>> {
     let mut line = Vec::new();
     loop {
         let available = match tokio::time::timeout(idle, reader.fill_buf()).await {
@@ -33,12 +38,12 @@ pub async fn read_raw_line<R: AsyncBufRead + Unpin>(reader: &mut R, idle: Durati
         if let Some(end) = available.iter().position(|&b| b == b'\n') {
             line.extend_from_slice(&available[..end]);
             reader.consume(end + 1);
-            return if line.len() > MAX_LINE { Err(too_long()) } else { Ok(Some(line)) };
+            return if line.len() > max { Err(too_long()) } else { Ok(Some(line)) };
         }
         let length = available.len();
         line.extend_from_slice(available);
         reader.consume(length);
-        if line.len() > MAX_LINE {
+        if line.len() > max {
             return Err(too_long());
         }
     }
