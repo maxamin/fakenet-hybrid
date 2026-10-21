@@ -228,6 +228,7 @@ fn signal(_pid: u32, _signal: Signal) -> std::io::Result<()> {
 }
 
 /// One mapping of /proc/<pid>/maps
+#[cfg(target_os = "linux")]
 #[derive(Debug, PartialEq)]
 struct Region {
     start: u64,
@@ -236,6 +237,7 @@ struct Region {
     path: String,
 }
 
+#[cfg(target_os = "linux")]
 fn parse_maps(text: &str) -> Vec<Region> {
     text.lines()
         .filter_map(|line| {
@@ -316,6 +318,7 @@ pub fn hooks_dir(capture: &Capture) -> PathBuf {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn parses_proc_maps() {
         let maps = "55d0c0a00000-55d0c0a21000 r-xp 00000000 08:01 1234 /usr/bin/sample\n7ffd1000-7ffd2000 rw-p 00000000 00:00 0 [stack]\n7ffd3000-7ffd4000 rw-p 00000000 00:00 0\n";

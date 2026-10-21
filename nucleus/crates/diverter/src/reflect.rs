@@ -34,10 +34,22 @@ pub enum Mode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
+    /// Let it through: exempt (`ignore_ports`, an excluded process) or not ours to judge
     Pass,
+    /// Neither diverted nor exempt (no listener for the port, a connection that predates the
+    /// diversion): dropped when `block_undiverted` is on, else passed
+    Undiverted,
     /// Rewrite to these addresses and inject it toward the local stack (single host:
     /// inbound) or out to the client (gateway replies)
     Reflect { src: SocketAddr, dst: SocketAddr },
+}
+
+/// Whether the Windows glue drops a packet rather than letting it out. `verdict` is None for
+/// packets that aren't TCP/UDP (other IP protocols, ICMP that wasn't answered). With
+/// `block` (`block_undiverted`), anything neither diverted nor exempt is dropped, except
+/// link-local control traffic (it can't leave the segment, and the network needs it).
+pub fn drops(verdict: Option<&Verdict>, block: bool, link_local_control: bool) -> bool {
+    block && !link_local_control && matches!(verdict, None | Some(Verdict::Undiverted))
 }
 
 /// (transport, client, original destination)
@@ -142,9 +154,12 @@ impl Reflector {
         }
         // Only a connection's first packet starts a TCP flow (we may have started mid-way)
         if flow.transport == Transport::Tcp && !flow.syn {
+            return Verdict::Undiverted;
+        }
+        if self.plan.ignore_ports.contains(&flow.dst.port()) {
             return Verdict::Pass;
         }
-        let Some(port) = self.listener_for(flow.transport, flow.dst.port()) else { return Verdict::Pass };
+        let Some(port) = self.listener_for(flow.transport, flow.dst.port()) else { return Verdict::Undiverted };
         let Some(listener) = self.listener_address(flow.src, port) else { return Verdict::Pass };
         let process = process();
         if excluded(&process) {
@@ -271,11 +286,36 @@ mod tests {
         assert_eq!(reflector.handle(&flow(Transport::Tcp, "10.0.2.15:50003", "1.1.1.1:80"), now, malware, |p| p.is_some()), Verdict::Pass);
         let mut established = flow(Transport::Tcp, "10.0.2.15:50004", "1.1.1.1:80");
         established.syn = false;
-        assert_eq!(reflector.handle(&established, now, || None, |_| false), Verdict::Pass);
+        assert_eq!(reflector.handle(&established, now, || None, |_| false), Verdict::Undiverted);
         assert_eq!(reflector.len(), 2);
         let later = now + IDLE + Duration::from_secs(1);
         reflector.handle(&flow(Transport::Tcp, "10.0.2.15:50005", "1.1.1.1:80"), later, || None, |_| false);
         assert_eq!(reflector.len(), 1);
         assert!(reflector.original(Transport::Udp, addr("8.8.8.8:5353"), addr("10.0.2.15:53")).is_none()); // Expired
     }
+
+    #[test]
+    fn tells_exempt_traffic_from_undiverted_traffic() {
+        // No catch-all listeners: unlisted ports aren't diverted
+        let narrow = Plan { tcp_default: None, udp_default: None, ..plan() };
+        let mut reflector = Reflector::new(narrow, Mode::SingleHost);
+        let now = Instant::now();
+        assert_eq!(reflector.handle(&flow(Transport::Tcp, "10.0.2.15:50010", "1.1.1.1:8443"), now, || None, |_| false), Verdict::Undiverted);
+        assert_eq!(reflector.handle(&flow(Transport::Udp, "10.0.2.15:50011", "1.1.1.1:5000"), now, || None, |_| false), Verdict::Undiverted);
+        assert_eq!(reflector.handle(&flow(Transport::Tcp, "10.0.2.15:50012", "10.0.0.1:3389"), now, || None, |_| false), Verdict::Pass); // ignore_ports
+        assert!(matches!(reflector.handle(&flow(Transport::Tcp, "10.0.2.15:50013", "1.1.1.1:80"), now, || None, |_| false), Verdict::Reflect { .. }));
+    }
+
+
+    #[test]
+    fn drops_only_undiverted_traffic_when_blocking() {
+        let reflect = Verdict::Reflect { src: "1.1.1.1:80".parse().unwrap(), dst: "10.0.2.15:80".parse().unwrap() };
+        assert!(drops(Some(&Verdict::Undiverted), true, false));
+        assert!(drops(None, true, false)); // GRE, non-echo ICMP...
+        assert!(!drops(None, true, true)); // Neighbour discovery
+        assert!(!drops(Some(&Verdict::Pass), true, false)); // ignore_ports, excluded processes
+        assert!(!drops(Some(&reflect), true, false));
+        assert!(!drops(Some(&Verdict::Undiverted), false, false)); // block_undiverted = false
+    }
+
 }

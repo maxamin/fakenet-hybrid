@@ -291,7 +291,7 @@ pub fn conntrack_original(_protocol: u8, _local: SocketAddr, _peer: SocketAddr) 
 }
 
 /// ctnetlink messages (linux/netfilter/nfnetlink_conntrack.h), built and parsed without I/O
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(target_os = "linux")]
 mod conntrack {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 

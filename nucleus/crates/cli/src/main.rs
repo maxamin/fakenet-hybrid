@@ -90,6 +90,10 @@ struct Args {
     /// fakenet.link.secret-file), and exit
     #[arg(long, value_name = "PATH")]
     generate_secret: Option<PathBuf>,
+    /// Windows, internal: wait for process PID to exit, then block outbound traffic (the
+    /// guard a diverting nucleus starts for itself)
+    #[arg(long, value_name = "PID", hide = true)]
+    block_after_exit: Option<u32>,
 }
 
 #[tokio::main]
@@ -176,6 +180,9 @@ async fn main() -> anyhow::Result<()> {
         println!("Wrote a new link secret to {}", path.display());
         return Ok(());
     }
+    if let Some(pid) = args.block_after_exit {
+        return fakenet_diverter::block_after_exit(pid);
+    }
     if args.restore_network {
         fakenet_diverter::restore(args.keep_block)?;
         println!("{}", if args.keep_block { "Network diversion removed (outbound traffic stays blocked)" } else { "Network diversion and outbound block removed" });
@@ -257,6 +264,10 @@ async fn main() -> anyhow::Result<()> {
         true => Some(Diverter::start(&config.diverter, config.plan())?),
         false => None,
     };
+    #[cfg(windows)]
+    if diverter.is_some() && config.diverter.block_after_stop {
+        start_exit_guard()?;
+    }
     let explorer = match config.explorer.enabled {
         true => {
             let explorer = Arc::new(fakenet_explorer::Explorer::load(config.explorer.clone())?);
@@ -407,6 +418,33 @@ async fn main() -> anyhow::Result<()> {
         Some(e) => Err(e.context("removing the diversion")),
         None => Ok(()),
     }
+}
+
+/// Windows: a detached copy of this executable that waits for us to exit, however we exit,
+/// and then blocks outbound traffic (block_after_stop survives a crash or a kill)
+#[cfg(windows)]
+fn start_exit_guard() -> anyhow::Result<()> {
+    use std::os::windows::process::CommandExt as _;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    let exe = std::env::current_exe().context("finding this executable for the exit guard")?;
+    let spawn = |flags: u32| {
+        std::process::Command::new(&exe)
+            .arg("--block-after-exit")
+            .arg(std::process::id().to_string())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(flags)
+            .spawn()
+    };
+    // Out of our job if allowed (a scheduled task's job would kill it with us), else in it
+    let guard = spawn(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB)
+        .or_else(|_| spawn(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP))
+        .context("starting the exit guard (block_after_stop)")?;
+    tracing::info!("Exit guard running (pid {}): if the nucleus dies, outbound traffic gets blocked", guard.id());
+    Ok(())
 }
 
 async fn shutdown_signal() {

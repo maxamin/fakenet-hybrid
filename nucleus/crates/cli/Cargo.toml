@@ -34,5 +34,8 @@ base64.workspace = true
 time.workspace = true
 libc.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
 [dev-dependencies]
 hickory-proto.workspace = true

@@ -95,21 +95,32 @@ impl RunAs {
         Ok(RunAs { name: name.to_string(), uid, gid, groups: groups.into_iter().map(|g| g as u32).collect(), home })
     }
 
-    #[cfg(not(unix))]
+    /// Windows: `restricted` (the default: Administrators deny-only, no privileges, medium
+    /// integrity) or `administrator` (the nucleus's own token, explicitly)
+    #[cfg(windows)]
+    pub fn resolve(name: &str) -> anyhow::Result<RunAs> {
+        let name = name.to_ascii_lowercase();
+        anyhow::ensure!(name == "restricted" || name == "administrator", "on Windows, --run-as is `restricted` (the default) or `administrator`");
+        Ok(RunAs { name, uid: 0, gid: 0, groups: Vec::new(), home: String::new() })
+    }
+
+    #[cfg(not(any(unix, windows)))]
     pub fn resolve(_name: &str) -> anyhow::Result<RunAs> {
-        anyhow::bail!("--run-as is only supported on Unix")
+        anyhow::bail!("--run-as is only supported on Unix and Windows")
     }
 }
 
 /// The sample's whole process tree: its own session (process group) and, when the cgroup v2
 /// hierarchy lets us create one, its own cgroup, which also catches descendants that start a
-/// session of their own
+/// session of their own (Windows uses a Job Object instead: `run_windows`)
+#[cfg(not(windows))]
 struct Tree {
     #[cfg_attr(not(unix), allow(dead_code))]
     group: Option<i32>,
     cgroup: Option<std::path::PathBuf>,
 }
 
+#[cfg(not(windows))]
 impl Tree {
     /// A new cgroup under the nucleus's own (Linux, cgroup v2, where creating one is allowed)
     fn cgroup() -> Option<std::path::PathBuf> {
@@ -197,8 +208,74 @@ impl Tree {
 
 /// Runs the sample until its whole process tree has exited (+ grace), `timeout`, or
 /// `interrupt` completes; whatever is left of the tree is then killed. With `run_as`, the
-/// sample runs as that user.
+/// sample runs as that user (Windows: restricted unless `administrator`).
 pub async fn execute(sample: &Sample, timeout: Duration, capture: &Arc<Capture>, run_as: Option<&RunAs>, interrupt: impl std::future::Future<Output = ()>) -> Outcome {
+    #[cfg(windows)]
+    return execute_job(sample, timeout, capture, run_as, interrupt).await;
+    #[cfg(not(windows))]
+    return execute_tree(sample, timeout, capture, run_as, interrupt).await;
+}
+
+/// How often the Windows job is polled for the tree's state
+#[cfg(windows)]
+const POLL: Duration = Duration::from_millis(200);
+
+/// Windows: the sample in a Job Object (see `run_windows`), polled for its exit and its tree
+#[cfg(windows)]
+async fn execute_job(sample: &Sample, timeout: Duration, capture: &Arc<Capture>, run_as: Option<&RunAs>, interrupt: impl std::future::Future<Output = ()>) -> Outcome {
+    let started = time::OffsetDateTime::now_utc();
+    let clock = Instant::now();
+    let deadline = tokio::time::Instant::now() + timeout;
+    let restricted = run_as.is_none_or(|r| r.name != "administrator");
+    let process = match crate::run_windows::spawn(&sample.path, &sample.args, sample.path.parent(), restricted) {
+        Ok(process) => process,
+        Err(e) => {
+            capture.log("sample_failed", json!({ "path": sample.path.display().to_string(), "error": e.to_string() }));
+            return Outcome { pid: None, reason: "failed to start", exit: None, started, runtime: clock.elapsed(), error: Some(e.to_string()) };
+        }
+    };
+    let pid = Some(process.pid);
+    capture.log("sample_started", json!({
+        "path": sample.path.display().to_string(), "sha256": sample.sha256, "pid": pid, "args": sample.args,
+        "run_as": if restricted { "restricted" } else { "administrator" }, "job": true,
+    }));
+    tracing::info!("Running {} (pid {}, {} token, in a job) for up to {}s", sample.path.display(), process.pid, if restricted { "restricted" } else { "administrator" }, timeout.as_secs());
+    tokio::pin!(interrupt);
+    let mut exit = None;
+    let reason = loop {
+        if exit.is_none() {
+            if let Some(code) = process.exit_code() {
+                exit = Some(format!("exit code: {code}"));
+                capture.log("sample_exited", json!({ "pid": pid, "status": exit, "runtime_ms": clock.elapsed().as_millis() as u64 }));
+            }
+        }
+        // The run ends when the whole tree has gone, not the first process
+        if exit.is_some() && process.active() == 0 {
+            break "exited";
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(POLL) => {}
+            _ = tokio::time::sleep_until(deadline) => break "timeout",
+            _ = &mut interrupt => break "interrupted",
+        }
+    };
+    if reason == "exited" {
+        // Its last connections may still be in flight: the grace period
+        tokio::select! {
+            _ = tokio::time::sleep(GRACE) => {}
+            _ = &mut interrupt => {}
+        }
+    }
+    // Anything left (or started during the grace period) goes, the whole job at once
+    let killed = process.kill();
+    if killed > 0 {
+        capture.log("sample_killed", json!({ "pid": pid, "reason": if reason == "exited" { "run ended" } else { reason }, "descendants": killed }));
+    }
+    Outcome { pid, reason, exit, started, runtime: clock.elapsed(), error: None }
+}
+
+#[cfg(not(windows))]
+async fn execute_tree(sample: &Sample, timeout: Duration, capture: &Arc<Capture>, run_as: Option<&RunAs>, interrupt: impl std::future::Future<Output = ()>) -> Outcome {
     let started = time::OffsetDateTime::now_utc();
     let clock = Instant::now();
     let deadline = tokio::time::Instant::now() + timeout;
@@ -304,6 +381,43 @@ pub async fn execute(sample: &Sample, timeout: Duration, capture: &Arc<Capture>,
     Outcome { pid, reason, exit, started, runtime: clock.elapsed(), error: None }
 }
 
+/// A Windows command line for `program` and `args`, quoted the way the Microsoft C runtime
+/// splits it back (CommandLineToArgvW): an argument with spaces, tabs or quotes is quoted;
+/// backslashes before a quote, and before the closing quote, are doubled
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn windows_command_line(program: &str, args: &[String]) -> String {
+    let mut line = String::new();
+    for (index, arg) in std::iter::once(program).chain(args.iter().map(String::as_str)).enumerate() {
+        if index > 0 {
+            line.push(' ');
+        }
+        if !arg.is_empty() && !arg.contains([' ', '\t', '"', '\n']) {
+            line.push_str(arg);
+            continue;
+        }
+        line.push('"');
+        let mut backslashes = 0;
+        for c in arg.chars() {
+            match c {
+                '\\' => backslashes += 1,
+                '"' => {
+                    line.extend(std::iter::repeat_n('\\', backslashes * 2 + 1));
+                    line.push('"');
+                    backslashes = 0;
+                }
+                c => {
+                    line.extend(std::iter::repeat_n('\\', backslashes));
+                    line.push(c);
+                    backslashes = 0;
+                }
+            }
+        }
+        line.extend(std::iter::repeat_n('\\', backslashes * 2));
+        line.push('"');
+    }
+    line
+}
+
 /// run.json: the sample, how the run went, and what it did (records by kind)
 pub fn summary(sample: &Sample, outcome: &Outcome, capture: &Capture) -> Value {
     let mut kinds = std::collections::BTreeMap::<String, u64>::new();
@@ -328,4 +442,18 @@ pub fn summary(sample: &Sample, outcome: &Outcome, capture: &Capture) -> Value {
         "events_by_protocol": protocols,
         "files": { "events": "events.jsonl", "pcap": "traffic.pcap", "report": "report.html", "explorer_map": "explorer-map.json", "captured": "files/", "indicators": ["indicators.csv", "indicators.stix.json", "indicators.misp.json"] },
     })
+}
+
+#[cfg(test)]
+mod command_line_tests {
+    use super::windows_command_line;
+
+    #[test]
+    fn quotes_like_the_c_runtime() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(windows_command_line("C:\\s\\bot.exe", &args(&["-x", "two words", ""])), "C:\\s\\bot.exe -x \"two words\" \"\"");
+        assert_eq!(windows_command_line("C:\\Program Files\\a.exe", &[]), "\"C:\\Program Files\\a.exe\"");
+        // Quotes escaped, backslashes doubled only before a quote or the closing quote
+        assert_eq!(windows_command_line("a", &args(&["say \"hi\"", "C:\\dir\\", "x\\\"y", "C:\\a b\\"])), "a \"say \\\"hi\\\"\" C:\\dir\\ \"x\\\\\\\"y\" \"C:\\a b\\\\\"");
+    }
 }

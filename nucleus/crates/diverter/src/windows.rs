@@ -8,6 +8,11 @@
 //! Diversion lasts as long as the WinDivert handles, which Windows closes when the process
 //! exits, even if it crashes; the DNS/route changes are restored by `stop()` (routes live in
 //! the ActiveStore, so they're gone after a reboot at worst).
+//!
+//! Containment (`block_undiverted`, `block_after_stop`): while running, the reflector drops
+//! every outbound packet it doesn't divert. When the nucleus stops, and when it dies (a guard
+//! process waits for it: `guard_exit`), a Windows Firewall block takes over until
+//! `--restore-network`. The next start lifts a leftover block once WinDivert is in place.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -31,6 +36,39 @@ pub struct Active {
     reflector: Arc<Mutex<Reflector>>,
     dns_backup: Option<Vec<DnsSetting>>,
     added_route: Option<PrimaryAddress>,
+    /// Install the firewall block when stopping (cleared once done)
+    block_after_stop: bool,
+}
+
+/// Blocks outbound traffic to everything but loopback with Windows Firewall
+pub fn install_block() -> anyhow::Result<()> {
+    powershell(&host_settings::install_block_script()).map(|_| ())
+}
+
+/// Lifts `install_block`, restoring the firewall and forwarding settings it changed
+pub fn release_block() -> anyhow::Result<()> {
+    powershell(&host_settings::release_block_script()).map(|_| ())
+}
+
+/// Waits for process `pid` to end, however it ends, then installs the block: run from a
+/// separate guard process, so a crash or kill of the nucleus can't leave the network open
+pub fn guard_exit(pid: u32) -> anyhow::Result<()> {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_FAILED};
+    use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject, INFINITE, PROCESS_SYNCHRONIZE};
+    // SAFETY: OpenProcess with a plain access mask; the handle is checked, waited on, closed
+    unsafe {
+        let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+        if !handle.is_null() {
+            let waited = WaitForSingleObject(handle, INFINITE);
+            CloseHandle(handle);
+            if waited == WAIT_FAILED {
+                bail!("waiting for process {pid}: {}", std::io::Error::last_os_error());
+            }
+        }
+    }
+    install_block()?;
+    tracing::warn!("The nucleus (pid {pid}) exited: outbound traffic is blocked until `fakenet-nucleus --restore-network`");
+    Ok(())
 }
 
 fn powershell(script: &str) -> anyhow::Result<String> {
@@ -58,22 +96,30 @@ impl Active {
         let owners: Owners = Arc::default();
         let ping = config.answer_ping;
         let icmp = if ping { " or icmp or icmpv6" } else { "" };
+        // With the block, every outbound packet goes through the reflector, so what isn't
+        // diverted (other IP protocols, unlisted ports, flows that predate the start) is dropped
+        let block = config.block_undiverted;
 
         // Open every handle before changing anything, so a missing driver or privilege fails
         // startup cleanly
         let sockets = WinDivert::socket("tcp or udp", 0, WinDivertFlags::new().set_sniff())
             .context("opening the WinDivert socket layer (run as Administrator, with WinDivert64.sys next to the executable)")?;
         let filter = match mode {
+            reflect::Mode::SingleHost if block => "outbound and !loopback".to_string(),
             reflect::Mode::SingleHost => format!("outbound and !loopback and (tcp or udp{icmp})"),
+            // The gateway's own traffic isn't the sample's: only listener replies are handled
             reflect::Mode::Gateway { .. } => "outbound and !loopback and (tcp or udp)".to_string(),
         };
         let network = Arc::new(WinDivert::network(filter, 0, WinDivertFlags::new()).context("opening the WinDivert network layer")?);
         let forward = match mode {
-            reflect::Mode::Gateway { .. } => Some(WinDivert::forward(format!("tcp or udp{icmp}"), 0, WinDivertFlags::new()).context("opening the WinDivert forward layer (is IP forwarding on?)")?),
+            reflect::Mode::Gateway { .. } => {
+                let filter = if block { "true".to_string() } else { format!("tcp or udp{icmp}") };
+                Some(WinDivert::forward(filter, 0, WinDivertFlags::new()).context("opening the WinDivert forward layer (is IP forwarding on?)")?)
+            }
             reflect::Mode::SingleHost => None,
         };
 
-        let mut active = Active { reflector: reflector.clone(), dns_backup: None, added_route: None };
+        let mut active = Active { reflector: reflector.clone(), dns_backup: None, added_route: None, block_after_stop: config.block_after_stop };
         if config.fix_gateway {
             let routes: u32 = powershell(host_settings::QUERY_DEFAULT_ROUTES)?.trim().parse().unwrap_or(0);
             if routes == 0 {
@@ -97,12 +143,19 @@ impl Active {
         std::thread::Builder::new().name("fakenet-windivert-sockets".into()).spawn(move || track_owners(sockets, socket_owners))?;
         let excluded = config.excluded_processes.clone();
         let (net, refl, own) = (network.clone(), reflector.clone(), owners.clone());
-        std::thread::Builder::new().name("fakenet-windivert".into()).spawn(move || reflect_outbound(net, refl, own, excluded, ping))?;
+        // Single host: the host's outbound traffic is the sample's, so the block applies to it
+        let outbound_block = block && matches!(mode, reflect::Mode::SingleHost);
+        std::thread::Builder::new().name("fakenet-windivert".into()).spawn(move || reflect_outbound(net, refl, own, excluded, ping, outbound_block))?;
         if let Some(forward) = forward {
             let (net, refl) = (network.clone(), reflector.clone());
-            std::thread::Builder::new().name("fakenet-windivert-forward".into()).spawn(move || reflect_forwarded(forward, net, refl, ping))?;
+            std::thread::Builder::new().name("fakenet-windivert-forward".into()).spawn(move || reflect_forwarded(forward, net, refl, ping, block))?;
         }
         tracing::info!("Diverting traffic with WinDivert ({:?})", config.mode);
+        // A block left by the previous stop would stop connections before WinDivert sees
+        // them; lifted only now, with the reflector (and its own block) running
+        if let Err(e) = release_block() {
+            tracing::warn!("Could not lift the previous run's firewall block: {e:#}");
+        }
         Ok(active)
     }
 
@@ -128,8 +181,17 @@ impl Active {
 
     pub fn stop(mut self) -> anyhow::Result<()> {
         self.restore_host_settings();
+        self.block_if_asked()?;
         // The handles live in their threads and close when the process exits
         tracing::info!("WinDivert diversion ends when the nucleus exits");
+        Ok(())
+    }
+
+    fn block_if_asked(&mut self) -> anyhow::Result<()> {
+        if std::mem::take(&mut self.block_after_stop) {
+            install_block().context("installing the firewall block (block_after_stop)")?;
+            tracing::warn!("Diversion stopping; outbound traffic stays blocked. Run `fakenet-nucleus --restore-network` to release it");
+        }
         Ok(())
     }
 }
@@ -137,6 +199,9 @@ impl Active {
 impl Drop for Active {
     fn drop(&mut self) {
         self.restore_host_settings();
+        if let Err(e) = self.block_if_asked() {
+            tracing::error!("{e:#}");
+        }
     }
 }
 
@@ -174,7 +239,7 @@ fn rewrite(data: &mut Vec<u8>, src: std::net::SocketAddr, dst: std::net::SocketA
 }
 
 /// Single host: outbound client packets & listener replies. Gateway: listener replies.
-fn reflect_outbound(handle: Arc<WinDivert<NetworkLayer>>, reflector: Arc<Mutex<Reflector>>, owners: Owners, excluded: Vec<String>, ping: bool) {
+fn reflect_outbound(handle: Arc<WinDivert<NetworkLayer>>, reflector: Arc<Mutex<Reflector>>, owners: Owners, excluded: Vec<String>, ping: bool, block: bool) {
     let own_pid = std::process::id();
     let mut buffer = vec![0u8; 65535];
     loop {
@@ -197,6 +262,7 @@ fn reflect_outbound(handle: Arc<WinDivert<NetworkLayer>>, reflector: Arc<Mutex<R
                 continue;
             }
         }
+        let mut verdict = None;
         if let Some(flow) = packet::parse(&packet.data) {
             let owner = || {
                 let lookup = || owners.lock().ok().and_then(|o| o.get(&(flow.transport, flow.src.port())).map(|(pid, _)| *pid));
@@ -213,8 +279,8 @@ fn reflect_outbound(handle: Arc<WinDivert<NetworkLayer>>, reflector: Arc<Mutex<R
                 pid.map(process_info)
             };
             let is_excluded = |process: &Option<ProcessInfo>| process.as_ref().is_some_and(|p| p.pid == own_pid || crate::is_excluded_process(p, &excluded));
-            let verdict = reflector.lock().map(|mut r| r.handle(&flow, Instant::now(), owner, is_excluded)).unwrap_or(Verdict::Pass);
-            if let Verdict::Reflect { src, dst } = verdict {
+            let decided = reflector.lock().map(|mut r| r.handle(&flow, Instant::now(), owner, is_excluded)).unwrap_or(Verdict::Pass);
+            if let Verdict::Reflect { src, dst } = decided {
                 let gateway_reply = reflector.lock().map(|r| r.is_gateway()).unwrap_or(false);
                 if rewrite(packet.data.to_mut(), src, dst) {
                     // Single host: deliver to the local stack. Gateway: replies leave as they are.
@@ -226,6 +292,10 @@ fn reflect_outbound(handle: Arc<WinDivert<NetworkLayer>>, reflector: Arc<Mutex<R
                     packet.address.set_udp_checksum(true);
                 }
             }
+            verdict = Some(decided);
+        }
+        if reflect::drops(verdict.as_ref(), block, packet::is_link_local_control(&packet.data)) {
+            continue; // Not re-injected: the packet never leaves
         }
         if let Err(e) = handle.send(&packet) {
             tracing::debug!("WinDivert send: {e}");
@@ -235,7 +305,7 @@ fn reflect_outbound(handle: Arc<WinDivert<NetworkLayer>>, reflector: Arc<Mutex<R
 
 /// Gateway: forwarded client packets go to the local listeners (re-injected inbound on the
 /// network layer); forwarded pings are answered
-fn reflect_forwarded(handle: WinDivert<ForwardLayer>, network: Arc<WinDivert<NetworkLayer>>, reflector: Arc<Mutex<Reflector>>, ping: bool) {
+fn reflect_forwarded(handle: WinDivert<ForwardLayer>, network: Arc<WinDivert<NetworkLayer>>, reflector: Arc<Mutex<Reflector>>, ping: bool, block: bool) {
     let mut buffer = vec![0u8; 65535];
     loop {
         let packet = match handle.recv(Some(&mut buffer)) {
@@ -255,10 +325,11 @@ fn reflect_forwarded(handle: WinDivert<ForwardLayer>, network: Arc<WinDivert<Net
                 continue;
             }
         }
-        let verdict = packet::parse(&packet.data)
-            .map(|flow| reflector.lock().map(|mut r| r.handle(&flow, Instant::now(), || None, |_| false)).unwrap_or(Verdict::Pass))
-            .unwrap_or(Verdict::Pass);
-        match verdict {
+        let verdict = packet::parse(&packet.data).map(|flow| reflector.lock().map(|mut r| r.handle(&flow, Instant::now(), || None, |_| false)).unwrap_or(Verdict::Pass));
+        if reflect::drops(verdict.as_ref(), block, packet::is_link_local_control(&packet.data)) {
+            continue; // Not forwarded
+        }
+        match verdict.unwrap_or(Verdict::Pass) {
             Verdict::Reflect { src, dst } => {
                 let mut data = packet.data.into_owned();
                 if !rewrite(&mut data, src, dst) {
@@ -277,7 +348,7 @@ fn reflect_forwarded(handle: WinDivert<ForwardLayer>, network: Arc<WinDivert<Net
                     tracing::debug!("WinDivert inject: {e}");
                 }
             }
-            Verdict::Pass => {
+            Verdict::Pass | Verdict::Undiverted => {
                 if let Err(e) = handle.send(&packet) {
                     tracing::debug!("WinDivert forward: {e}");
                 }

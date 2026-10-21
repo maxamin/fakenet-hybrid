@@ -6,6 +6,8 @@ pub mod infer;
 pub mod import;
 pub mod replay;
 pub mod run;
+#[cfg(windows)]
+pub mod run_windows;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};

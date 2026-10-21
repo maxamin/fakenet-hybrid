@@ -40,12 +40,15 @@ pub struct DiverterConfig {
     /// Also divert IPv6 (Linux: needs ip6tables NAT; without it, IPv6 is blocked rather
     /// than diverted when `block_undiverted` is on)
     pub ipv6: bool,
-    /// Linux: reject every outbound packet the diversion doesn't send to the nucleus (other
-    /// IP protocols, non-echo ICMP, connections that predate the rules...), except loopback,
-    /// local destinations, `ignore_ports` and excluded processes
+    /// Reject (Linux) or drop (Windows) every outbound packet the diversion doesn't send to
+    /// the nucleus (other IP protocols, non-echo ICMP, unlisted ports, connections that predate
+    /// the start...), except loopback, local destinations, `ignore_ports`, excluded processes
+    /// and (Windows) link-local control traffic. Gateway mode: forwarded traffic only.
     pub block_undiverted: bool,
-    /// Linux: keep that block in place when the nucleus stops (or crashes), so a sample still
-    /// running never reaches the real network; `fakenet-nucleus --restore-network` lifts it
+    /// Keep outbound traffic blocked when the nucleus stops or crashes (Linux: the iptables
+    /// block stays; Windows: a firewall rule, installed on stop and by a guard process when the
+    /// nucleus dies), so a sample still running never reaches the real network;
+    /// `fakenet-nucleus --restore-network` lifts it
     pub block_after_stop: bool,
     /// Answer pings to any address (malware checks connectivity with ICMP echo)
     pub answer_ping: bool,
@@ -163,10 +166,28 @@ pub fn restore(keep_block: bool) -> anyhow::Result<()> {
         true => linux::cleanup_diversion(),
         false => linux::cleanup(),
     };
-    #[cfg(not(target_os = "linux"))]
+    // Windows: the diversion ends with the process; only the firewall block remains
+    #[cfg(windows)]
+    return match keep_block {
+        true => Ok(()),
+        false => windows::release_block(),
+    };
+    #[cfg(not(any(target_os = "linux", windows)))]
     {
         let _ = keep_block;
         Ok(())
+    }
+}
+
+/// Windows: waits for process `pid` to exit, then blocks outbound traffic (the guard a
+/// diverting nucleus starts, so even a crash leaves the network closed)
+pub fn block_after_exit(pid: u32) -> anyhow::Result<()> {
+    #[cfg(windows)]
+    return windows::guard_exit(pid);
+    #[cfg(not(windows))]
+    {
+        let _ = pid;
+        anyhow::bail!("--block-after-exit is for Windows (Linux keeps its iptables block in place by itself)")
     }
 }
 

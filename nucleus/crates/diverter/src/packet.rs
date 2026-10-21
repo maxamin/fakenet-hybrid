@@ -157,6 +157,25 @@ pub fn echo_reply(packet: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// RFC 1071 one's complement checksum, seeded with `initial`
+/// Traffic that can't leave the local link, which a block must let through for the network
+/// to keep working: IGMP, IPv4 local-network-control multicast (224.0.0.0/24) and limited
+/// broadcast; IPv6 to or from link-local addresses or to link-local multicast (neighbour
+/// discovery, router solicitation, MLD)
+pub fn is_link_local_control(packet: &[u8]) -> bool {
+    match packet.first().map(|b| b >> 4) {
+        Some(4) if packet.len() >= 20 => {
+            let dst = &packet[16..20];
+            packet[9] == 2 || (dst[0] == 224 && dst[1] == 0 && dst[2] == 0) || dst == [255, 255, 255, 255]
+        }
+        Some(6) if packet.len() >= 40 => {
+            let (src, dst) = (&packet[8..24], &packet[24..40]);
+            let link_local = |a: &[u8]| a[0] == 0xfe && a[1] & 0xc0 == 0x80;
+            link_local(src) || link_local(dst) || (dst[0] == 0xff && dst[1] & 0x0f == 0x02)
+        }
+        _ => false,
+    }
+}
+
 pub fn internet_checksum(data: &[u8], initial: u32) -> u16 {
     let mut sum = initial;
     for chunk in data.chunks(2) {
@@ -274,4 +293,29 @@ pub mod tests {
         assert!(parse(&[0x45, 0, 0]).is_none());
         assert!(parse(b"").is_none());
     }
+
+    #[test]
+    fn recognises_link_local_control_traffic() {
+        let v4 = |protocol: u8, dst: [u8; 4]| {
+            let mut p = vec![0x45, 0, 0, 20, 0, 0, 0, 0, 1, protocol, 0, 0, 10, 0, 2, 15];
+            p.extend(dst);
+            p
+        };
+        assert!(is_link_local_control(&v4(2, [224, 0, 0, 22]))); // IGMP
+        assert!(is_link_local_control(&v4(17, [224, 0, 0, 251]))); // mDNS
+        assert!(is_link_local_control(&v4(17, [255, 255, 255, 255])));
+        assert!(!is_link_local_control(&v4(47, [8, 8, 8, 8]))); // GRE to the internet
+        assert!(!is_link_local_control(&v4(17, [239, 1, 2, 3]))); // Routable multicast
+        let v6 = |src: &str, dst: &str| {
+            let mut p = vec![0x60, 0, 0, 0, 0, 0, 58, 255];
+            p.extend(src.parse::<std::net::Ipv6Addr>().unwrap().octets());
+            p.extend(dst.parse::<std::net::Ipv6Addr>().unwrap().octets());
+            p
+        };
+        assert!(is_link_local_control(&v6("fe80::1", "ff02::1:ff00:1"))); // Neighbour solicitation
+        assert!(is_link_local_control(&v6("2001:db8::5", "ff02::2"))); // Router solicitation
+        assert!(!is_link_local_control(&v6("2001:db8::5", "2606:4700::1111")));
+        assert!(!is_link_local_control(&[0x45, 0])); // Truncated
+    }
+
 }
