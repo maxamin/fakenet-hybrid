@@ -14,6 +14,7 @@ Copy-Item bin\fakenet-nucleus.exe, bin\WinDivert.dll, bin\WinDivert64.sys "$Root
 Copy-Item daemon\fakenet-daemon.jar "$Root\daemon\" -Force
 Copy-Item daemon\lib, daemon\routes "$Root\daemon\" -Recurse -Force
 Copy-Item config\fakenet.toml, config\default-files, config\fingerprints, config\hooks "$Root\config\" -Recurse -Force
+Copy-Item plugins "$Root\" -Recurse -Force
 Copy-Item deploy\windows\register-tasks.ps1, deploy\windows\uninstall.ps1 "$Root\" -Force
 
 & "$Root\register-tasks.ps1" -Root $Root

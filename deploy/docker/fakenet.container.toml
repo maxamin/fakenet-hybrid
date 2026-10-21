@@ -47,6 +47,21 @@ timeout_ms = 120000              # an unanswered held request gets the proposed 
 # command = ["frida", "-p", "{pid}", "-l", "/opt/fakenet-hybrid/hooks/net-backtrace.js"]
 # wait_ms = 3000                 # hold the answer until Frida has attached
 
+# Responders: answer what the rules and the explorer leave, from a model learned with
+# `fakenet-nucleus --learn capture/ datasets/*.pcap -o model.json`, or from a plugin
+# (plugins/README.md). Tried in order; the first answer wins.
+# [[responder]]
+# name = "model"
+# kind = "model"
+# packs = ["model.json"]
+# protocols = ["http", "dns"]
+# [[responder]]
+# name = "radamsa"
+# kind = "plugin"
+# command = ["python3", "-I", "/opt/fakenet-hybrid/plugins/radamsa_mutator.py", "--rate", "0.3"]
+# protocols = ["raw"]
+# timeout_ms = 150
+
 [yara]                           # scan every saved payload (bodies, uploads, emails) with YARA
 rules = []                       # rule files or folders of *.yar/*.yara, e.g. ["yara-rules"]
 # yara = "yara"                  # the stock YARA tools (on PATH by default; yara.exe/yarac.exe on Windows)

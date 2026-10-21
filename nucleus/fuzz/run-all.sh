@@ -5,7 +5,7 @@ set -u -o pipefail
 cd "$(dirname "$0")"
 SECONDS_EACH="${1:-120}"
 failed=()
-for target in handlers parsers packets link_messages report_and_import; do
+for target in handlers parsers packets link_messages report_and_import model; do
     echo "=== $target"
     mkdir -p "corpus/$target"
     RUSTC_BOOTSTRAP=1 cargo fuzz run -s none "$target" "corpus/$target" "seeds/$target" -- \

@@ -51,6 +51,7 @@ fn harness() -> &'static Harness {
                 known_fingerprints: Default::default(),
                 manual: None,
                 hooks: None,
+                responders: Vec::new(),
             });
             (ctx, tokio::net::UdpSocket::bind("127.0.0.1:0").await.expect("socket"))
         });

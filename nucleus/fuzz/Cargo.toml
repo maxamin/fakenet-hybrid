@@ -15,6 +15,7 @@ fakenet-capture = { path = "../crates/capture" }
 fakenet-diverter = { path = "../crates/diverter" }
 fakenet-listeners = { path = "../crates/listeners", features = ["fuzzing"] }
 fakenet-cli = { path = "../crates/cli" }
+fakenet-model = { path = "../crates/model" }
 serde_json = "=1.0.154"
 toml = "=1.1.8"
 
@@ -56,6 +57,13 @@ bench = false
 [[bin]]
 name = "report_and_import"
 path = "fuzz_targets/report_and_import.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "model"
+path = "fuzz_targets/model.rs"
 test = false
 doc = false
 bench = false

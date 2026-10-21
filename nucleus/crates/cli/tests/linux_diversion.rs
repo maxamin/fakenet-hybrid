@@ -72,6 +72,7 @@ async fn diverts_inside_a_network_namespace() {
         known_fingerprints: Default::default(),
         manual: None,
         hooks: None,
+        responders: Vec::new(),
     });
     let listeners = [
         listener("http", Some(Protocol::Http), Transport::Tcp, 80),

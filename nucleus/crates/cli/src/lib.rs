@@ -53,6 +53,9 @@ pub struct Config {
     /// Reverse-engineering hooks (pause, dump, command) on matching events
     #[serde(default, rename = "hook")]
     pub hooks: Vec<fakenet_listeners::hooks::HookConfig>,
+    /// Answer sources (learned models, plugins) for what the rules and the explorer leave
+    #[serde(default, rename = "responder")]
+    pub responders: Vec<fakenet_listeners::responders::ResponderConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -176,6 +179,7 @@ impl Config {
             }
         };
         resolve(&mut self.nucleus.capture_dir);
+        self.responders.iter_mut().flat_map(|r| r.packs.iter_mut()).for_each(resolve);
         self.nucleus.fingerprints.iter_mut().for_each(resolve);
         self.yara.rules.iter_mut().for_each(resolve);
         for path in [&mut self.nucleus.ca_cert, &mut self.nucleus.ca_key, &mut self.daemon.secret_file, &mut self.defaults.http.webroot, &mut self.defaults.ftp.root, &mut self.defaults.tftp.root] {
@@ -340,6 +344,36 @@ pub fn write_report(event_files: &[PathBuf], output: &Path) -> anyhow::Result<()
         .and_then(|dir| std::fs::read_to_string(dir.join("explorer-map.json")).ok())
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
     std::fs::write(output, fakenet_capture::report::render_with_map(&records, map.as_ref())).with_context(|| format!("writing {}", output.display()))
+}
+
+/// The pcap files to learn from: files as given; in folders (capture folders, `previous/`
+/// archives), every traffic*.pcap and wire*.pcap, recursively, sorted
+pub fn learn_inputs(paths: &[PathBuf]) -> anyhow::Result<Vec<PathBuf>> {
+    fn walk(dir: &Path, found: &mut Vec<PathBuf>, depth: usize) -> anyhow::Result<()> {
+        for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))?.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if path.is_dir() && depth < 4 {
+                walk(&path, found, depth + 1)?;
+            } else if (name.starts_with("traffic") || name.starts_with("wire")) && name.ends_with(".pcap") {
+                found.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    for path in paths {
+        match path.is_dir() {
+            true => {
+                let mut found = Vec::new();
+                walk(path, &mut found, 0)?;
+                found.sort();
+                files.extend(found);
+            }
+            false => files.push(path.clone()),
+        }
+    }
+    Ok(files)
 }
 
 pub fn read_records(event_files: &[PathBuf]) -> anyhow::Result<Vec<serde_json::Value>> {

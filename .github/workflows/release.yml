@@ -66,6 +66,7 @@ jobs:
           Copy-Item daemon\target\fakenet-daemon.jar "$stage\daemon\"
           Copy-Item daemon\target\lib,daemon\routes "$stage\daemon\" -Recurse
           Copy-Item nucleus\config\fakenet.toml,nucleus\config\default-files,nucleus\config\fingerprints,nucleus\config\hooks "$stage\config\" -Recurse
+          Copy-Item plugins "$stage\" -Recurse
           # register-tasks.ps1 & uninstall.ps1 at the install-folder root for the MSI shortcut
           Copy-Item deploy\windows\register-tasks.ps1,deploy\windows\uninstall.ps1 "$stage\"
           Copy-Item deploy\windows\install.ps1 "$stage\deploy\windows\"

@@ -19,6 +19,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y dnsutils redis-tools swaks bsdutils netcat-openbsd openssh-client tshark
       - name: Tests
         run: cargo test --workspace
+      - name: Responder plugins
+        working-directory: .
+        run: python3 -m unittest discover plugins/tests
       - name: Real-client interop
         run: cargo build -p fakenet-cli && scripts/interop.sh
       # Root inside a private network namespace: real iptables REDIRECT/NFQUEUE, isolated

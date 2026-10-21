@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/schema", "crates/sniffer", "crates/link", "crates/capture", "crates/listeners", "crates/diverter", "crates/cli", "crates/explorer"]
+members = ["crates/schema", "crates/sniffer", "crates/link", "crates/capture", "crates/listeners", "crates/diverter", "crates/cli", "crates/explorer", "crates/model"]
 
 [workspace.package]
 version = "0.1.0"
@@ -17,6 +17,7 @@ fakenet-capture = { path = "crates/capture" }
 fakenet-listeners = { path = "crates/listeners" }
 fakenet-diverter = { path = "crates/diverter" }
 fakenet-explorer = { path = "crates/explorer" }
+fakenet-model = { path = "crates/model" }
 
 tokio = { version = "=1.53.3", features = ["full"] }
 hyper = { version = "=1.12.0", features = ["http1", "http2", "server", "client"] }

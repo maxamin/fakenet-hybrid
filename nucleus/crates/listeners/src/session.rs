@@ -48,6 +48,8 @@ pub struct Context {
     pub manual: Option<Arc<crate::manual::Manual>>,
     /// Reverse-engineering hooks: pause, dump or instrument the sample on matching events
     pub hooks: Option<Arc<crate::hooks::Hooks>>,
+    /// Answer sources tried, in order, when neither the rules nor the explorer answered
+    pub responders: Vec<Arc<dyn crate::responders::Responder>>,
 }
 
 pub struct Session {
@@ -170,7 +172,7 @@ impl Session {
         if let Some(hooks) = &self.ctx.hooks {
             hooks.fire(&event, &self.ctx.capture).await;
         }
-        let decided = self.decide_event(&event).await;
+        let decided = self.decide_event(&event, default).await;
         match &self.ctx.manual {
             Some(manual) if manual.wants(&event) => {
                 let proposed = decided.as_ref().and_then(|a| a.response.as_deref()).or(default);
@@ -201,8 +203,9 @@ impl Session {
         }
     }
 
-    /// The daemon's decision, or the explorer's proposal for what it left to the default
-    async fn decide_event(&mut self, event: &fakenet_schema::Event) -> Option<Action> {
+    /// The daemon's decision, or the explorer's proposal for what it left to the default, or
+    /// a responder's answer
+    async fn decide_event(&mut self, event: &fakenet_schema::Event, default: Option<&[u8]>) -> Option<Action> {
         let decided = match self.ctx.link.decide(event).await {
             Decision::Action(action) => {
                 self.ctx.capture.log("decision", json!({
@@ -246,8 +249,31 @@ impl Session {
                     auth: None,
                 })
             }
-            None => decided,
+            None => self.respond(event, default).await.or(decided),
         }
+    }
+
+    /// The first responder's answer (see `responders`), if any answers
+    async fn respond(&self, event: &fakenet_schema::Event, default: Option<&[u8]>) -> Option<Action> {
+        for responder in &self.ctx.responders {
+            let Some(proposal) = responder.respond(event, default).await else { continue };
+            self.ctx.capture.log("responded", json!({
+                "session_id": event.session_id, "request_id": event.request_id, "responder": responder.name(),
+                "route": proposal.route, "detail": proposal.detail, "close": proposal.close, "response_bytes": proposal.response.len(),
+            }));
+            return Some(Action {
+                version: fakenet_schema::VERSION,
+                kind: fakenet_schema::ActionKind::Action,
+                request_id: event.request_id.clone(),
+                session_id: event.session_id.clone(),
+                response: Some(proposal.response),
+                close: proposal.close,
+                delay_ms: None,
+                route: Some(proposal.route),
+                auth: None,
+            });
+        }
+        None
     }
 
     /// Saves a payload under files/ on the blocking pool, so the disk write doesn't hold a

@@ -90,6 +90,13 @@ struct Args {
     /// fakenet.link.secret-file), and exit
     #[arg(long, value_name = "PATH")]
     generate_secret: Option<PathBuf>,
+    /// Learn a traffic model from pcap files or capture folders (their traffic*.pcap and
+    /// wire*.pcap), written to --output (default model.json) for a `model` responder
+    #[arg(long, num_args = 1.., value_name = "PCAP")]
+    learn: Vec<PathBuf>,
+    /// Summarise a model pack (protocols, exchanges, most frequent requests), and exit
+    #[arg(long, value_name = "PACK")]
+    model_info: Option<PathBuf>,
     /// Run the link to the daemon without a shared secret (any local process can then read
     /// the events or pose as the daemon); without it the nucleus refuses to start
     #[arg(long)]
@@ -140,6 +147,20 @@ async fn main() -> anyhow::Result<()> {
         let output = args.output.clone().unwrap_or_else(|| PathBuf::from("report.html"));
         fakenet_cli::write_report(&fakenet_capture::with_rotations(events), &output)?;
         println!("Wrote {}", output.display());
+        return Ok(());
+    }
+    if !args.learn.is_empty() {
+        let files = fakenet_cli::learn_inputs(&args.learn)?;
+        anyhow::ensure!(!files.is_empty(), "no pcap files found in {:?}", args.learn);
+        let pack = fakenet_model::learn(&files)?;
+        let output = args.output.clone().unwrap_or_else(|| PathBuf::from("model.json"));
+        std::fs::write(&output, serde_json::to_string_pretty(&pack)?).with_context(|| format!("writing {}", output.display()))?;
+        let exchanges: u64 = pack.protocols.values().map(|p| p.exchanges).sum();
+        println!("Learned {exchanges} exchanges ({} protocols) from {} files into {}", pack.protocols.len(), files.len(), output.display());
+        return Ok(());
+    }
+    if let Some(path) = &args.model_info {
+        println!("{}", serde_json::to_string_pretty(&fakenet_model::Pack::load(path)?.summary())?);
         return Ok(());
     }
     if let [a, b] = &args.diff[..] {
@@ -310,6 +331,7 @@ async fn main() -> anyhow::Result<()> {
         known_fingerprints: Arc::new(config.known_fingerprints()?),
         manual: manual.clone(),
         hooks: hooks.clone(),
+        responders: fakenet_listeners::responders::build(&config.responders)?,
     });
     let server = Server::start(ctx.clone(), config.nucleus.bind, &config.listeners).await?;
     for (name, transport, address) in &server.bound {

@@ -19,6 +19,7 @@ httparse.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
 rcgen.workspace = true
+fakenet-model.workspace = true
 # Loading a saved CA: checks its key matches and that it is a CA
 x509-parser = "=0.18.1"
 hickory-proto.workspace = true
@@ -45,5 +46,7 @@ base64.workspace = true
 fuzzing = []
 
 [dev-dependencies]
+toml.workspace = true
+serde_json.workspace = true
 fakenet-explorer.workspace = true
 hyper-util.workspace = true

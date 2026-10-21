@@ -475,6 +475,7 @@ dependencies = [
  "fakenet-explorer",
  "fakenet-link",
  "fakenet-listeners",
+ "fakenet-model",
  "fakenet-schema",
  "fakenet-sniffer",
  "hickory-proto",
@@ -548,6 +549,7 @@ dependencies = [
  "fakenet-capture",
  "fakenet-explorer",
  "fakenet-link",
+ "fakenet-model",
  "fakenet-schema",
  "fakenet-sniffer",
  "futures-util",
@@ -570,8 +572,22 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
+ "toml",
  "tracing",
  "x509-parser",
+]
+
+[[package]]
+name = "fakenet-model"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "fakenet-schema",
+ "fakenet-sniffer",
+ "hickory-proto",
+ "serde",
+ "serde_json",
+ "time",
 ]
 
 [[package]]

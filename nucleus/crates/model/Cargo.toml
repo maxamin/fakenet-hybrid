@@ -1,0 +1,16 @@
+[package]
+name = "fakenet-model"
+description = "Learns a statistical model of network traffic from captures, and answers requests from it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+fakenet-schema.workspace = true
+fakenet-sniffer.workspace = true
+hickory-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+time.workspace = true

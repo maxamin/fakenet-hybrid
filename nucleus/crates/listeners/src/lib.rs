@@ -28,6 +28,7 @@ pub mod process;
 pub mod raw;
 pub mod rdp;
 pub mod redis;
+pub mod responders;
 pub mod server;
 pub mod session;
 pub mod simple;

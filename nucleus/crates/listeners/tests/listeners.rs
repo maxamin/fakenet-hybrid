@@ -4,6 +4,7 @@
 mod common;
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use std::sync::Arc;
 
@@ -344,4 +345,45 @@ async fn one_udp_clients_datagrams_are_answered_concurrently() {
     seqs.sort_unstable();
     assert_eq!(seqs, (0..8).collect::<Vec<u64>>());
     assert_eq!(nucleus.kinds("session_start").len(), 1);
+}
+
+#[tokio::test]
+async fn responders_answer_what_the_rules_leave() {
+    use fakenet_listeners::responders::{build, ResponderConfig};
+    // A pack, as --learn writes it: two answers for one key, seen 3:1
+    let mut pack = fakenet_model::Pack::default();
+    for (body, times) in [("task=sleep", 3), ("task=scan", 1)] {
+        for _ in 0..times {
+            pack.add("http", b"GET /gate/7 HTTP/1.1\r\n", format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes());
+        }
+    }
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("responders");
+    std::fs::create_dir_all(&dir).unwrap();
+    let pack_path = dir.join("model.json");
+    std::fs::write(&pack_path, serde_json::to_string(&pack).unwrap()).unwrap();
+    // The model answers HTTP; a plugin (python) answers raw TCP
+    let plugin = "import json,sys,base64\nfor l in sys.stdin:\n    r=json.loads(l)\n    print(json.dumps({'id':r['id'],'response_base64':base64.b64encode(b'PLUGIN:'+base64.b64decode(r['event']['payload'])).decode(),'route':'echo'}),flush=True)\n";
+    let configs: Vec<ResponderConfig> = toml::from_str::<toml::Table>(&format!(
+        "[[responder]]\nname = \"model\"\nkind = \"model\"\npacks = [{:?}]\nprotocols = [\"http\"]\n[[responder]]\nname = \"py\"\nkind = \"plugin\"\ncommand = [\"python3\", \"-I\", \"-c\", {:?}]\nprotocols = [\"raw\"]\ntimeout_ms = 3000\n",
+        pack_path.display().to_string(), plugin
+    ))
+    .unwrap()["responder"]
+        .clone()
+        .try_into()
+        .unwrap();
+    let listeners = [listener("http", Some(Protocol::Http), Transport::Tcp, false), listener("raw", Some(Protocol::Raw), Transport::Tcp, false)];
+    let nucleus = Nucleus::start_responding("responders", LinkConfig::default(), &listeners, fakenet_listeners::Defaults::default(), None, fakenet_listeners::LimitsConfig::default(), None, None, build(&configs).unwrap()).await;
+
+    let mut seen = std::collections::BTreeMap::new();
+    for _ in 0..40 {
+        let page = http_get(nucleus.address("http"), "/gate/12345").await; // Another id: the same normalised key
+        *seen.entry(page.rsplit("\r\n\r\n").next().unwrap().to_string()).or_insert(0) += 1;
+    }
+    assert_eq!(seen.keys().cloned().collect::<Vec<_>>(), ["task=scan", "task=sleep"], "{seen:?}");
+    assert!(seen["task=sleep"] > seen["task=scan"], "about 3:1, got {seen:?}");
+    assert_eq!(raw_exchange(nucleus.address("raw"), b"hello").await, b"PLUGIN:hello");
+
+    let records = nucleus.kinds("responded");
+    assert!(records.iter().any(|r| r["route"] == "model:GET /gate/{n}" && r["detail"]["probability"].as_f64().is_some()));
+    assert!(records.iter().any(|r| r["responder"] == "py" && r["route"] == "py:echo"));
 }

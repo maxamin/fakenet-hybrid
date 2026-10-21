@@ -16,6 +16,7 @@ fakenet-capture.workspace = true
 fakenet-listeners.workspace = true
 fakenet-diverter.workspace = true
 fakenet-explorer.workspace = true
+fakenet-model.workspace = true
 tokio.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true

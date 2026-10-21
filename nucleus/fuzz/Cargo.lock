@@ -74,6 +74,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3bc62ac97cc33321f50863d514c3bc38a453947a8f9e781137e47c7401020aed"
 
 [[package]]
+name = "arc-swap"
+version = "1.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69f7f8c3906b62b754cd5326047894316021dcfe5a194c8ea52bdd94934a3457"
+
+[[package]]
 name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -467,6 +473,7 @@ name = "fakenet-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "base64",
  "clap",
  "fakenet-capture",
@@ -474,11 +481,13 @@ dependencies = [
  "fakenet-explorer",
  "fakenet-link",
  "fakenet-listeners",
+ "fakenet-model",
  "fakenet-schema",
  "fakenet-sniffer",
  "http-body-util",
  "hyper",
  "hyper-util",
+ "libc",
  "md-5",
  "serde",
  "serde_json",
@@ -487,6 +496,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -527,6 +537,7 @@ dependencies = [
  "fakenet-cli",
  "fakenet-diverter",
  "fakenet-listeners",
+ "fakenet-model",
  "fakenet-schema",
  "fakenet-sniffer",
  "libfuzzer-sys",
@@ -553,11 +564,13 @@ name = "fakenet-listeners"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "base64",
  "bytes",
  "fakenet-capture",
  "fakenet-explorer",
  "fakenet-link",
+ "fakenet-model",
  "fakenet-schema",
  "fakenet-sniffer",
  "futures-util",
@@ -575,11 +588,26 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "socket2",
  "time",
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
  "tracing",
+ "x509-parser",
+]
+
+[[package]]
+name = "fakenet-model"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "fakenet-schema",
+ "fakenet-sniffer",
+ "hickory-proto",
+ "serde",
+ "serde_json",
+ "time",
 ]
 
 [[package]]

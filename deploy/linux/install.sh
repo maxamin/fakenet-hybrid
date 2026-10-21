@@ -9,7 +9,7 @@ command -v java >/dev/null || { echo "Java 21 is required (e.g. apt install open
 install -d /opt/fakenet-hybrid/bin /opt/fakenet-hybrid/daemon /etc/fakenet /var/lib/fakenet
 install -m 0755 bin/fakenet-nucleus /opt/fakenet-hybrid/bin/
 cp -r daemon/fakenet-daemon.jar daemon/lib daemon/routes /opt/fakenet-hybrid/daemon/
-cp -r config/default-files config/fingerprints config/hooks /opt/fakenet-hybrid/
+cp -r config/default-files config/fingerprints config/hooks plugins /opt/fakenet-hybrid/
 id fakenet >/dev/null 2>&1 || useradd --system --home /var/lib/fakenet --shell /usr/sbin/nologin fakenet
 install -d -o fakenet -g fakenet /var/lib/fakenet/audit
 chown -R fakenet:fakenet /opt/fakenet-hybrid/daemon/routes

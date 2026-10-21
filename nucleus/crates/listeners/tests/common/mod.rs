@@ -52,6 +52,15 @@ impl Nucleus {
         name: &str, link: LinkConfig, listeners: &[ListenerConfig], defaults: Defaults, explorer: Option<Arc<fakenet_explorer::Explorer>>, limits: LimitsConfig,
         manual: Option<Arc<fakenet_listeners::manual::Manual>>, hooks: Option<Arc<fakenet_listeners::hooks::Hooks>>,
     ) -> Nucleus {
+        Nucleus::start_responding(name, link, listeners, defaults, explorer, limits, manual, hooks, Vec::new()).await
+    }
+
+    #[allow(clippy::too_many_arguments, dead_code)]
+    pub async fn start_responding(
+        name: &str, link: LinkConfig, listeners: &[ListenerConfig], defaults: Defaults, explorer: Option<Arc<fakenet_explorer::Explorer>>, limits: LimitsConfig,
+        manual: Option<Arc<fakenet_listeners::manual::Manual>>, hooks: Option<Arc<fakenet_listeners::hooks::Hooks>>,
+        responders: Vec<Arc<dyn fakenet_listeners::responders::Responder>>,
+    ) -> Nucleus {
         let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("listeners-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         let ca = Arc::new(TlsAuthority::generate().unwrap());
@@ -69,6 +78,7 @@ impl Nucleus {
             known_fingerprints: Default::default(),
             manual,
             hooks,
+            responders,
         });
         let server = Server::start(ctx, "127.0.0.1".parse().unwrap(), listeners).await.unwrap();
         Nucleus { server, dir, ca, capture }
