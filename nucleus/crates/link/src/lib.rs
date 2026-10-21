@@ -35,6 +35,9 @@ pub struct LinkConfig {
     pub backoff_max: Duration,
     /// Shared with the daemon; None = unauthenticated link
     pub secret: Option<Secret>,
+    /// Payload bytes sent per event; past it the payload is cut and
+    /// `meta.payload_truncated` / `meta.payload_bytes` say so (the capture keeps it all)
+    pub max_payload: usize,
 }
 
 impl Default for LinkConfig {
@@ -45,6 +48,7 @@ impl Default for LinkConfig {
             deadline: Duration::from_millis(200),
             backoff_initial: Duration::from_millis(100),
             backoff_max: Duration::from_secs(10),
+            max_payload: 1024 * 1024,
             secret: None,
         }
     }
@@ -183,10 +187,38 @@ impl Link {
         }
     }
 
+    /// The event as sent: payload cut to `max_payload` (without copying the rest), signed
     fn signed(&self, event: &Event) -> Event {
-        let mut event = event.clone();
-        event.auth = self.inner.config.secret.as_ref().map(|s| s.sign(&auth::event_text(&event)));
-        event
+        let max = self.inner.config.max_payload;
+        let mut meta = event.meta.clone();
+        if event.payload.len() > max {
+            if !meta.is_object() {
+                meta = serde_json::json!({});
+            }
+            meta["payload_bytes"] = serde_json::json!(event.payload.len());
+            meta["payload_truncated"] = serde_json::json!(true);
+        }
+        let mut sent = Event {
+            version: event.version,
+            kind: event.kind,
+            request_id: event.request_id.clone(),
+            session_id: event.session_id.clone(),
+            seq: event.seq,
+            protocol: event.protocol,
+            transport: event.transport,
+            tls: event.tls,
+            src: event.src.clone(),
+            dst: event.dst.clone(),
+            dport: event.dport,
+            process: event.process.clone(),
+            timestamp: event.timestamp.clone(),
+            payload: event.payload[..event.payload.len().min(max)].to_vec(),
+            meta,
+            expects_reply: event.expects_reply,
+            auth: None,
+        };
+        sent.auth = self.inner.config.secret.as_ref().map(|s| s.sign(&auth::event_text(&sent)));
+        sent
     }
 
     fn fallback(&self, reason: Fallback) -> Decision {
@@ -351,5 +383,28 @@ where
     // Fail everything still waiting now, rather than at each one's deadline
     for (_, waiter) in link.pending.lock().unwrap_or_else(|e| e.into_inner()).drain() {
         let _ = waiter.send(Err("websocket disconnected".into()));
+    }
+}
+
+#[cfg(test)]
+mod payload_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn large_payloads_are_cut_and_still_signed() {
+        let secret = Secret::new(b"lab-secret");
+        let link = Link::start(LinkConfig { max_payload: 8, secret: Some(Secret::new(b"lab-secret")), ..LinkConfig::default() });
+        let mut builder = fakenet_schema::EventBuilder::new(fakenet_schema::Protocol::Raw, fakenet_schema::Transport::Tcp, "10.0.0.5:1".parse().unwrap(), "10.0.0.1:2".parse().unwrap());
+        let event = builder.event(b"0123456789abcdef".to_vec(), serde_json::json!({ "bytes": 16 }), true);
+        let sent = link.signed(&event);
+        assert_eq!(sent.payload, b"01234567");
+        assert_eq!(sent.meta["payload_bytes"], 16);
+        assert_eq!(sent.meta["payload_truncated"], true);
+        assert_eq!(sent.meta["bytes"], 16);
+        assert!(secret.verify(&auth::event_text(&sent), sent.auth.as_deref()));
+        let small = builder.event(b"hi".to_vec(), serde_json::Value::Null, true);
+        let sent = link.signed(&small);
+        assert_eq!(sent.payload, b"hi");
+        assert!(sent.meta.is_null());
     }
 }

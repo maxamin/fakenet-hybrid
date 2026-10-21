@@ -10,7 +10,7 @@ use std::time::Duration;
 use serde_json::json;
 use tokio::net::UdpSocket;
 
-use crate::http::default_content;
+use crate::http::default_content_blocking;
 use crate::lines::preview;
 use crate::session::Session;
 
@@ -72,16 +72,21 @@ pub async fn handle(data: &[u8], session: &mut Session, peer: SocketAddr) -> Opt
     };
     let result = if opcode == RRQ {
         let meta = json!({ "opcode": "RRQ", "filename": filename, "mode": mode, "file": true });
-        let default = default_content(&filename.replace('\\', "/"), session.ctx.defaults.load().tftp.root.as_deref()).0;
+        let root = session.ctx.defaults.load().tftp.root.clone();
+        let default = default_content_blocking(&filename.replace('\\', "/"), root.as_deref()).await.0;
         let (contents, _) = session.answer(data, meta, default, false).await;
         session.log("download", json!({ "filename": filename, "mode": mode, "size": contents.len() }));
         send_file(&socket, &contents, session).await
     } else {
-        receive_file(&socket, session).await.map(|contents| {
-            let saved = session.ctx.capture.save_file("tftp", &filename, &contents).ok().map(|p| p.display().to_string());
-            session.log("upload", json!({ "filename": filename, "size": contents.len(), "saved": saved, "preview": preview(&contents, 256) }));
-            session.notify(&contents, json!({ "opcode": "WRQ", "filename": filename, "size": contents.len(), "saved": saved }));
-        })
+        match receive_file(&socket, session).await {
+            Ok(contents) => {
+                let saved = session.save_file("tftp", &filename, hyper::body::Bytes::copy_from_slice(&contents)).await;
+                session.log("upload", json!({ "filename": filename, "size": contents.len(), "saved": saved, "preview": preview(&contents, 256) }));
+                session.notify(&contents, json!({ "opcode": "WRQ", "filename": filename, "size": contents.len(), "saved": saved }));
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     };
     if let Err(e) = result {
         session.log("transfer_failed", json!({ "filename": filename, "error": e.to_string() }));

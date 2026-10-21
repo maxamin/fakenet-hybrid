@@ -74,7 +74,7 @@ async fn connection(ctx: Arc<Context>, listener: Arc<crate::server::Listener>, i
         return Ok(());
     }
     session.log("tls_handshake", json!({ "sni": sni, "alpn": "h3" }));
-    let session = Arc::new(tokio::sync::Mutex::new(session));
+    let session = Arc::new(session);
 
     let mut h3 = h3::server::Connection::<_, Bytes>::new(h3_quinn::Connection::new(connection)).await?;
     let mut requests = JoinSet::new();
@@ -104,15 +104,12 @@ fn connection_local_port(listener: &crate::server::Listener) -> u16 {
     listener.bound_port.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-async fn request<C>(resolver: h3::server::RequestResolver<C, Bytes>, session: Arc<tokio::sync::Mutex<Session>>) -> anyhow::Result<()>
+async fn request<C>(resolver: h3::server::RequestResolver<C, Bytes>, session: Arc<Session>) -> anyhow::Result<()>
 where
     C: h3::quic::Connection<Bytes>,
 {
     let (request, mut stream) = resolver.resolve_request().await?;
-    let (max, mut held) = {
-        let session = session.lock().await;
-        (session.ctx.defaults.load().http.max_body_bytes, session.ctx.limits.hold())
-    };
+    let (max, mut held) = (session.ctx.defaults.load().http.max_body_bytes, session.ctx.limits.hold());
     let mut body = Vec::new();
     while let Some(mut chunk) = stream.recv_data().await? {
         if body.len() + chunk.remaining() > max || held.grow(chunk.remaining()).is_err() {
@@ -129,10 +126,8 @@ where
         }
     }
     let (parts, ()) = request.into_parts();
-    let response = {
-        let mut session = session.lock().await;
-        crate::http::answer(&mut session, parts, Bytes::from(body)).await
-    };
+    // A view per request: streams are answered concurrently
+    let response = crate::http::answer(&mut session.view(), parts, Bytes::from(body)).await;
     let (mut head, body) = response.into_parts();
     // Connection-specific headers are forbidden in HTTP/3 (RFC 9114 4.2)
     head.headers.remove("connection");

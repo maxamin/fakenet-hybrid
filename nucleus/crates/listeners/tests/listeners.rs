@@ -319,3 +319,29 @@ async fn live_manual_mode_lets_the_analyst_answer() {
     // Raw isn't selected by the filter: answered at once
     assert_eq!(raw_exchange(nucleus.address("raw"), b"ping").await, b"ping");
 }
+
+#[tokio::test]
+async fn one_udp_clients_datagrams_are_answered_concurrently() {
+    // Every decision waits for the deadline (the daemon is too slow): one after another,
+    // eight datagrams would take eight deadlines
+    let nucleus = Nucleus::start("udp-concurrent", fake_daemon(Duration::from_secs(2), camel_like).await, &LISTENERS()).await;
+    wait_connected().await;
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let started = Instant::now();
+    for i in 0..8u8 {
+        socket.send_to(&[i, b'x'], nucleus.address("raw-udp")).await.unwrap();
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let mut buffer = [0u8; 64];
+    while seen.len() < 8 {
+        let length = tokio::time::timeout(Duration::from_secs(5), socket.recv(&mut buffer)).await.unwrap().unwrap();
+        seen.insert(buffer[..length].to_vec());
+    }
+    let elapsed = started.elapsed();
+    assert!(elapsed < Duration::from_millis(800), "{elapsed:?}");
+    // One session, its events still numbered in sequence
+    let mut seqs: Vec<u64> = nucleus.kinds("event").iter().map(|e| e["seq"].as_u64().unwrap()).collect();
+    seqs.sort_unstable();
+    assert_eq!(seqs, (0..8).collect::<Vec<u64>>());
+    assert_eq!(nucleus.kinds("session_start").len(), 1);
+}

@@ -18,4 +18,20 @@ class SessionStateTest {
         state.forget("pid:1");
         assertNull(state.get("pid:1", "id"));
     }
+
+    @Test
+    void staysBoundedUnderManyActorsAndKeys() {
+        SessionState state = new SessionState();
+        for (int i = 0; i < 25_000; i++) {
+            state.increment("ip:10.0." + (i / 256) + "." + (i % 256), "n");
+        }
+        assertTrue(state.size() <= 10_000, "actors: " + state.size());
+        for (int i = 0; i < 2_000; i++) {
+            state.put("pid:7", "k" + i, i);
+        }
+        assertEquals(SessionState.MAX_KEYS, state.all("pid:7").size());
+        state.put("pid:7", "k0", "updated"); // Existing keys still change
+        assertEquals("updated", state.get("pid:7", "k0"));
+        assertEquals(0, state.increment("pid:7", "new-counter"));
+    }
 }

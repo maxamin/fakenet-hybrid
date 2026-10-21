@@ -12,7 +12,6 @@ use hyper::body::{Bytes, Incoming};
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use serde_json::json;
-use tokio::sync::Mutex;
 
 use fakenet_schema::Protocol;
 
@@ -24,7 +23,7 @@ const DEFAULT_PAGE: &str = "<html><head><title>FakeNet</title></head><body><h1>F
 
 /// HTTP/1.1 and HTTP/2 (by ALPN or the h2 preface) on one connection
 pub async fn handle(stream: BoxStream, session: Session) -> anyhow::Result<()> {
-    let session = Arc::new(Mutex::new(session));
+    let session = Arc::new(session);
     let service = hyper::service::service_fn(move |request| {
         let session = session.clone();
         async move { Ok::<_, Infallible>(respond(request, &session).await) }
@@ -64,8 +63,9 @@ async fn connect(mut request: Request<Incoming>, session: &mut Session) -> Respo
     response
 }
 
-async fn respond(request: Request<Incoming>, session: &Mutex<Session>) -> Response<Full<Bytes>> {
-    let mut session = session.lock().await;
+async fn respond(request: Request<Incoming>, session: &Session) -> Response<Full<Bytes>> {
+    // A view per request: HTTP/2 streams are answered concurrently
+    let mut session = session.view();
     if request.method() == hyper::Method::CONNECT {
         return connect(request, &mut session).await;
     }
@@ -164,7 +164,7 @@ pub(crate) async fn answer(session: &mut Session, parts: hyper::http::request::P
         .collect();
     let mut saved = None;
     if defaults.save_bodies && !body.is_empty() {
-        saved = session.ctx.capture.save_file("http_body", parts.uri.path(), &body).ok().map(|p| p.display().to_string());
+        saved = session.save_file("http_body", parts.uri.path(), body.clone()).await;
     }
     // Absolute-form HTTP/1.x targets ("GET http://host/path") come from clients using us as a
     // proxy. HTTP/2 & HTTP/3 always carry scheme + authority: that's not a proxy request.
@@ -182,7 +182,10 @@ pub(crate) async fn answer(session: &mut Session, parts: hyper::http::request::P
 
     // Live manual mode shows the analyst the built-in answer (Custom Responses aren't run
     // just to preview them: providers have effects)
-    let preview = session.ctx.manual.as_ref().map(|_| serialize(&builtin_default(&defaults, &host, parts.uri.path(), false)));
+    let preview = match session.ctx.manual.is_some() {
+        true => Some(serialize(&builtin_default(&defaults, &host, parts.uri.path(), false).await)),
+        false => None,
+    };
     let action = session.decide_with_default(&raw, meta, preview.as_deref()).await;
     let response = match action {
         Some(action) if action.response.is_some() => {
@@ -197,7 +200,7 @@ pub(crate) async fn answer(session: &mut Session, parts: hyper::http::request::P
                     if defaults.connectivity_checks && connectivity_check(&host, parts.uri.path()).is_some() {
                         session.log("connectivity_check", json!({ "host": host, "path": parts.uri.path() }));
                     }
-                    builtin_default(&defaults, &host, parts.uri.path(), close)
+                    builtin_default(&defaults, &host, parts.uri.path(), close).await
                 }
             }
         }
@@ -274,11 +277,11 @@ pub fn server_for(configured: &str, host: &str) -> String {
 }
 
 /// The built-in answer: an OS connectivity check's expected reply, or the default page/file
-fn builtin_default(defaults: &crate::config::HttpDefaults, host: &str, path: &str, close: bool) -> Response<Full<Bytes>> {
+async fn builtin_default(defaults: &crate::config::HttpDefaults, host: &str, path: &str, close: bool) -> Response<Full<Bytes>> {
     if let Some((status, content_type, content)) = defaults.connectivity_checks.then(|| connectivity_check(host, path)).flatten() {
         return build(StatusCode::from_u16(status).unwrap_or(StatusCode::OK), &[("content-type", content_type)], Bytes::from_static(content.as_bytes()), &server_for(&defaults.server_header, host), close);
     }
-    let (content, content_type) = default_content(path, defaults.webroot.as_deref());
+    let (content, content_type) = default_content_blocking(path, defaults.webroot.as_deref()).await;
     build(StatusCode::OK, &[("content-type", content_type)], Bytes::from(content), &server_for(&defaults.server_header, host), close)
 }
 
@@ -350,6 +353,16 @@ fn futures_body(response: &Response<Full<Bytes>>) -> Bytes {
 }
 
 /// The webroot file for a request path, else the default file for its type, else a page
+/// `default_content` on the blocking pool (it may read a webroot file)
+pub async fn default_content_blocking(path: &str, webroot: Option<&Path>) -> (Vec<u8>, &'static str) {
+    let (path, webroot) = (path.to_string(), webroot.map(Path::to_path_buf));
+    let fallback = path.clone();
+    match tokio::task::spawn_blocking(move || default_content(&path, webroot.as_deref())).await {
+        Ok(found) => found,
+        Err(_) => default_content(&fallback, None),
+    }
+}
+
 pub fn default_content(path: &str, webroot: Option<&Path>) -> (Vec<u8>, &'static str) {
     let path = path.split(['?', '#']).next().unwrap_or("/");
     let content_type = mime_type(path);

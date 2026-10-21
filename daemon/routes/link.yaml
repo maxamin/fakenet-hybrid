@@ -108,13 +108,14 @@
     from:
       uri: direct:audit
       steps:
+        # Payloads trimmed to fakenet.audit.payload-bytes (length and SHA-256 kept): the
+        # nucleus's events.jsonl has them in full
         - setBody:
             groovy: |
-              def json = lab.fakenet.daemon.LinkSchema.JSON
-              json.writeValueAsString([
-                event : json.readTree(exchange.getProperty('FakenetEventJson', String)),
-                action: json.readTree(request.getBody(String))
-              ])
+              lab.fakenet.daemon.AuditRecord.of(
+                exchange.getProperty('FakenetEventJson', String),
+                request.getBody(String),
+                exchange.context.resolvePropertyPlaceholders('{{fakenet.audit.payload-bytes:256}}') as int)
         - multicast:
             steps:
               - to: "file:{{fakenet.audit.dir}}?fileName=events-${date:now:yyyyMMdd}.jsonl&fileExist=Append&appendChars=\\n"

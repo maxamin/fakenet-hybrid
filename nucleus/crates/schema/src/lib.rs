@@ -264,10 +264,12 @@ impl Action {
     }
 }
 
-/// Builds events, numbering them within their session
+/// Builds events, numbering them within their session. Clones share the numbering (one
+/// session's concurrent requests: HTTP/2 streams, UDP datagrams)
+#[derive(Clone)]
 pub struct EventBuilder {
     pub session_id: String,
-    next_seq: u64,
+    next_seq: std::sync::Arc<AtomicU64>,
     pub protocol: Protocol,
     pub transport: Transport,
     pub tls: bool,
@@ -291,7 +293,7 @@ impl EventBuilder {
     pub fn new(protocol: Protocol, transport: Transport, src: SocketAddr, dst: SocketAddr) -> EventBuilder {
         EventBuilder {
             session_id: new_session_id(transport),
-            next_seq: 0,
+            next_seq: Default::default(),
             protocol,
             transport,
             tls: false,
@@ -302,8 +304,7 @@ impl EventBuilder {
     }
 
     pub fn event(&mut self, payload: Vec<u8>, meta: Value, expects_reply: bool) -> Event {
-        let seq = self.next_seq;
-        self.next_seq += 1;
+        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
         Event {
             version: VERSION,
             kind: EventKind::Event,

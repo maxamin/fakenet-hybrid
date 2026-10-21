@@ -14,7 +14,7 @@ use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::http::{default_content, safe_join};
+use crate::http::{default_content_blocking, safe_join};
 use crate::lines::{preview, split_command, Lines};
 use crate::session::Session;
 use crate::stream::BoxStream;
@@ -86,7 +86,7 @@ pub async fn handle(stream: BoxStream, mut session: Session) -> anyhow::Result<(
                 session.log("rename", json!({ "from": ftp.rename_from.take(), "to": arg }));
                 "250 Rename successful\r\n".into()
             }
-            "SIZE" => format!("213 {}\r\n", ftp.file_contents(&arg).len()),
+            "SIZE" => format!("213 {}\r\n", ftp.file_contents(&arg).await.len()),
             "MDTM" => "213 20010101000000\r\n".into(),
             "PASV" => ftp.passive(&session, false).await,
             "EPSV" => ftp.passive(&session, true).await,
@@ -99,7 +99,8 @@ pub async fn handle(stream: BoxStream, mut session: Session) -> anyhow::Result<(
             "RETR" => {
                 let path = resolve_virtual(&ftp.cwd, &arg);
                 let meta = json!({ "command": verb, "argument": arg, "path": path, "file": true });
-                let (contents, _) = session.answer(line.as_bytes(), meta, ftp.file_contents(&arg), false).await;
+                let default = ftp.file_contents(&arg).await;
+                let (contents, _) = session.answer(line.as_bytes(), meta, default, false).await;
                 session.log("download", json!({ "path": path, "size": contents.len() }));
                 let reply = ftp.transfer_out(&mut lines, &session, &contents, "Transfer complete").await?;
                 lines.send(&session, reply.as_bytes()).await?;
@@ -111,7 +112,7 @@ pub async fn handle(stream: BoxStream, mut session: Session) -> anyhow::Result<(
                     lines.send(&session, reply.as_bytes()).await?;
                     continue;
                 };
-                let saved = session.ctx.capture.save_file("ftp", &arg, &upload).ok().map(|p| p.display().to_string());
+                let saved = session.save_file("ftp", &arg, hyper::body::Bytes::copy_from_slice(&upload)).await;
                 session.log("upload", json!({ "name": arg, "size": upload.len(), "saved": saved, "preview": preview(&upload, 256) }));
                 let meta = json!({ "command": verb, "argument": arg, "size": upload.len(), "saved": saved });
                 if !lines.respond(&mut session, &upload, meta, reply, false).await? {
@@ -215,8 +216,8 @@ impl Ftp {
         Ok(("226 Transfer complete\r\n".into(), Some(contents)))
     }
 
-    fn file_contents(&self, name: &str) -> Vec<u8> {
-        default_content(&resolve_virtual(&self.cwd, name), self.root.as_deref()).0
+    async fn file_contents(&self, name: &str) -> Vec<u8> {
+        default_content_blocking(&resolve_virtual(&self.cwd, name), self.root.as_deref()).await.0
     }
 
     fn listing(&self, names_only: bool) -> String {

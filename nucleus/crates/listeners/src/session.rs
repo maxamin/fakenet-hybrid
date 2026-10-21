@@ -61,7 +61,11 @@ pub struct Session {
     pub tls_fallback_name: Option<String>,
     /// The listener's FakeNet-NG Custom Responses, if configured
     pub custom: Option<Arc<crate::custom::CustomResponses>>,
-    flow: Option<TcpFlow>,
+    flow: Option<Arc<TcpFlow>>,
+    /// A view (see `view`): the session's end isn't logged when it drops
+    is_view: bool,
+    /// Proxy tunnels (CONNECT, SOCKS) this session is nested in
+    pub tunnel_depth: u8,
 }
 
 impl Session {
@@ -79,10 +83,27 @@ impl Session {
         };
         let mut builder = EventBuilder::new(protocol, transport, src, dst);
         builder.process = process;
-        let flow = (transport == Transport::Tcp).then(|| ctx.capture.tcp_flow(src, dst));
-        let session = Session { ctx, listener: listener.to_string(), builder, local, tls_fallback_name: None, custom: None, flow };
+        let flow = (transport == Transport::Tcp).then(|| Arc::new(ctx.capture.tcp_flow(src, dst)));
+        let session = Session { ctx, listener: listener.to_string(), builder, local, tls_fallback_name: None, custom: None, flow, is_view: false, tunnel_depth: 0 };
         session.log("session_start", json!({}));
         session
+    }
+
+    /// The same session for one concurrent step (an HTTP/2 or HTTP/3 request, a UDP
+    /// datagram): same ID, shared event numbering and pcap conversation, so steps decide in
+    /// parallel instead of queueing behind one lock. Changes to a view stay in the view.
+    pub fn view(&self) -> Session {
+        Session {
+            ctx: self.ctx.clone(),
+            listener: self.listener.clone(),
+            builder: self.builder.clone(),
+            local: self.local,
+            tls_fallback_name: self.tls_fallback_name.clone(),
+            custom: self.custom.clone(),
+            flow: self.flow.clone(),
+            is_view: true,
+            tunnel_depth: self.tunnel_depth,
+        }
     }
 
     /// Switches protocol after sniffing (same session, same pcap conversation)
@@ -229,6 +250,14 @@ impl Session {
         }
     }
 
+    /// Saves a payload under files/ on the blocking pool, so the disk write doesn't hold a
+    /// runtime worker; the saved path, or None (budget reached, write failed)
+    pub async fn save_file(&self, prefix: &'static str, name: &str, data: hyper::body::Bytes) -> Option<String> {
+        let capture = self.ctx.capture.clone();
+        let name = name.to_string();
+        tokio::task::spawn_blocking(move || capture.save_file(prefix, &name, &data)).await.ok()?.ok().map(|p| p.display().to_string())
+    }
+
     /// The configured random delay (defaults.latency_ms) before answering
     async fn jitter(&self) {
         let [min, max] = self.ctx.defaults.load().latency_ms;
@@ -265,6 +294,9 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
+        if self.is_view {
+            return;
+        }
         self.notify(&[], json!({ "closed": true }));
         self.log("session_end", json!({}));
     }

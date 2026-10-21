@@ -22,6 +22,9 @@ import org.apache.camel.Processor;
  * </ul>
  */
 public class EventIn implements Processor {
+    /** Payloads up to this size are also given to rules as text (FakenetText) */
+    static final int MAX_TEXT = 1024 * 1024;
+
     private final LinkAuth auth;
 
     public EventIn(LinkAuth auth) {
@@ -86,7 +89,8 @@ public class EventIn implements Processor {
             message.setHeader(ACTOR, "pid:" + process.get("pid"));
         }
         message.setHeader(PAYLOAD, payload);
-        message.setHeader(TEXT, new String(payload, StandardCharsets.UTF_8));
+        // As text for rules; skipped for large payloads (one more copy each, rarely matched as text)
+        message.setHeader(TEXT, payload.length <= MAX_TEXT ? new String(payload, StandardCharsets.UTF_8) : "");
         message.setHeader(META, meta);
         message.setHeader(EXPECTS_REPLY, !Boolean.FALSE.equals(event.get("expects_reply")));
         message.setHeader(METHOD, meta.get("method"));

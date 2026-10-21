@@ -123,6 +123,11 @@ pub struct Explorer {
 }
 
 const MAX_PENDING: usize = 32;
+/// Behaviour signatures remembered: they include destinations, so a scanning sample would
+/// otherwise grow the set for the whole run. Past it, nothing more counts as new.
+const MAX_SEEN: usize = 100_000;
+/// Actors with answers awaiting credit (one per process or source address)
+const MAX_ACTORS: usize = 10_000;
 const MAX_BEHAVIORS_PER_TEMPLATE: usize = 200;
 
 impl Explorer {
@@ -215,7 +220,7 @@ impl Explorer {
         state.observed += 1;
         state.learned.learn_from_traffic(&event.payload, &event.meta);
         for signature in signatures(event) {
-            if !state.seen.insert(signature.clone()) {
+            if state.seen.len() >= MAX_SEEN || !state.seen.insert(signature.clone()) {
                 continue;
             }
             self.credit(&mut state, &actor, now, 1.0, |stats| {
@@ -300,6 +305,14 @@ impl Explorer {
         state.arms.entry((context.clone(), template.name.clone())).or_default().uses += 1;
         state.templates.entry(template.name.clone()).or_default().uses += 1;
         let actor = Self::actor(&mut state, event);
+        if state.pending.len() >= MAX_ACTORS && !state.pending.contains_key(&actor) {
+            // Spoofed or scanning sources: drop the actors with nothing recent
+            let window = Duration::from_millis(self.config.window_ms);
+            state.pending.retain(|_, queue| queue.back().is_some_and(|p| p.at.elapsed() <= window));
+            if state.pending.len() >= MAX_ACTORS {
+                state.pending.clear();
+            }
+        }
         let queue = state.pending.entry(actor).or_default();
         queue.push_back(Pending { template: template.name.clone(), context, tokens: tokens.clone(), at: Instant::now(), wall: std::time::SystemTime::now() });
         while queue.len() > MAX_PENDING {

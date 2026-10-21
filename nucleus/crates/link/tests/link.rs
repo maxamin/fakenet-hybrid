@@ -104,6 +104,7 @@ fn config(websocket: Option<SocketAddr>, http: Option<SocketAddr>, deadline_ms: 
         backoff_initial: Duration::from_millis(20),
         backoff_max: Duration::from_millis(200),
         secret: None,
+        max_payload: 1024 * 1024,
     }
 }
 

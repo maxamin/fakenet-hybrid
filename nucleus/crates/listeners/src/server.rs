@@ -103,7 +103,7 @@ async fn serve_tcp(ctx: Arc<Context>, config: Arc<Listener>, socket: TcpListener
     }
 }
 
-type UdpSessions = Mutex<HashMap<SocketAddr, (Arc<Mutex<Session>>, Instant, crate::limits::SessionPermit)>>;
+type UdpSessions = Mutex<HashMap<SocketAddr, (Arc<Session>, Instant, crate::limits::SessionPermit)>>;
 
 /// Datagrams being answered at once per UDP listener; past it, new ones are dropped (UDP
 /// may lose packets anyway) rather than queued without bound
@@ -154,7 +154,7 @@ async fn serve_udp(ctx: Arc<Context>, config: Arc<Listener>, socket: Arc<UdpSock
                         if protocol != fakenet_schema::Protocol::Raw {
                             session.set_protocol(protocol, false);
                         }
-                        table.insert(client, (Arc::new(Mutex::new(session)), Instant::now(), permit));
+                        table.insert(client, (Arc::new(session), Instant::now(), permit));
                     }
                     let entry = table.get_mut(&client).expect("inserted above");
                     entry.1 = Instant::now();
@@ -163,7 +163,8 @@ async fn serve_udp(ctx: Arc<Context>, config: Arc<Listener>, socket: Arc<UdpSock
                 let socket = socket.clone();
                 let listener = config.clone();
                 tasks.spawn(async move {
-                    let mut session = session.lock().await;
+                    // A view per datagram: one client's datagrams are answered concurrently
+                    let mut session = session.view();
                     if let Some(reason) = crate::custom::filter(&listener.config, session.builder.process.as_ref(), session.builder.dst.ip()) {
                         session.log("filtered", serde_json::json!({ "reason": reason }));
                         return;

@@ -45,19 +45,172 @@ struct Pcap {
     bytes: u64,
 }
 
+/// Work for the writer thread
+enum Job {
+    Record(String),
+    /// Packets for traffic.pcap, stamped when they were made
+    Packets(Vec<Vec<u8>>, std::time::Duration),
+    Wire(Vec<u8>, std::time::Duration),
+    /// Answered once everything queued before it is written and flushed
+    Flush(std::sync::mpsc::Sender<()>),
+}
+
+/// Jobs queued before senders wait (back-pressure only when the disk can't keep up)
+const QUEUE: usize = 65_536;
+/// How often written data is synced to disk (an abrupt VM revert loses at most this much)
+const SYNC_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The thread that owns the event log and the pcaps: sessions never wait on disk I/O or on
+/// each other's writes, only on a bounded queue
+struct Writer {
+    dir: PathBuf,
+    limits: Limits,
+    events: EventLog,
+    pcap: Pcap,
+    wire: Option<Pcap>,
+    last_sync: std::time::Instant,
+    dirty: bool,
+}
+
+impl Writer {
+    fn run(mut self, jobs: std::sync::mpsc::Receiver<Job>) {
+        while let Ok(job) = jobs.recv() {
+            let mut waiting = Vec::new();
+            self.handle(job, &mut waiting);
+            // Batch whatever else is queued, then flush once
+            while let Ok(job) = jobs.try_recv() {
+                self.handle(job, &mut waiting);
+            }
+            self.flush();
+            for waiter in waiting {
+                let _ = waiter.send(());
+            }
+        }
+        self.flush();
+        self.sync();
+    }
+
+    fn handle(&mut self, job: Job, waiting: &mut Vec<std::sync::mpsc::Sender<()>>) {
+        self.dirty = true;
+        match job {
+            Job::Record(line) => self.record(&line),
+            Job::Packets(packets, time) => Self::write_rotating(&self.dir, "traffic.pcap", &self.limits, &mut self.pcap, packets, time),
+            Job::Wire(packet, time) => self.wire_packet(packet, time),
+            Job::Flush(waiter) => waiting.push(waiter),
+        }
+    }
+
+    fn record(&mut self, line: &str) {
+        let events = &mut self.events;
+        if self.limits.max_events_bytes > 0 && events.bytes + line.len() as u64 + 1 > self.limits.max_events_bytes && events.bytes > 0 {
+            let _ = events.writer.flush();
+            rotate(&self.dir, "events.jsonl", self.limits.keep);
+            match OpenOptions::new().create(true).append(true).open(self.dir.join("events.jsonl")) {
+                Ok(file) => *events = EventLog { writer: BufWriter::new(file), bytes: 0 },
+                Err(e) => tracing::warn!("Could not rotate the event log: {e}"),
+            }
+        }
+        // Best effort: a full disk must not take the fake services down
+        if writeln!(events.writer, "{line}").is_err() {
+            tracing::warn!("Could not write to the event log");
+        }
+        events.bytes += line.len() as u64 + 1;
+    }
+
+    fn wire_packet(&mut self, packet: Vec<u8>, time: std::time::Duration) {
+        if self.wire.is_none() {
+            if self.dir.join("wire.pcap").exists() {
+                // Never truncate an earlier capture, whatever `keep` says
+                rotate(&self.dir, "wire.pcap", self.limits.keep.max(1));
+            }
+            match pcap::PcapWriter::create(&self.dir.join("wire.pcap")) {
+                Ok(writer) => self.wire = Some(Pcap { writer, bytes: 24 }),
+                Err(e) => {
+                    tracing::warn!("Could not create wire.pcap: {e}");
+                    return;
+                }
+            }
+        }
+        if let Some(pcap) = self.wire.as_mut() {
+            Self::write_rotating(&self.dir, "wire.pcap", &self.limits, pcap, vec![packet], time);
+        }
+    }
+
+    fn write_rotating(dir: &Path, name: &str, limits: &Limits, pcap: &mut Pcap, packets: Vec<Vec<u8>>, time: std::time::Duration) {
+        for packet in packets {
+            let size = packet.len() as u64 + 16;
+            if limits.max_pcap_bytes > 0 && pcap.bytes + size > limits.max_pcap_bytes {
+                let _ = pcap.writer.flush();
+                rotate(dir, name, limits.keep);
+                match pcap::PcapWriter::create(&dir.join(name)) {
+                    Ok(writer) => *pcap = Pcap { writer, bytes: 24 },
+                    Err(e) => {
+                        tracing::warn!("Could not rotate {name}: {e}");
+                        return;
+                    }
+                }
+            }
+            if pcap.writer.write_at(&packet, time).is_err() {
+                tracing::warn!("Could not write to {name}");
+                return;
+            }
+            pcap.bytes += size;
+        }
+    }
+
+    fn flush(&mut self) {
+        let _ = self.events.writer.flush();
+        let _ = self.pcap.writer.flush();
+        if let Some(wire) = self.wire.as_mut() {
+            let _ = wire.writer.flush();
+        }
+        if self.dirty && self.last_sync.elapsed() >= SYNC_EVERY {
+            self.sync();
+        }
+    }
+
+    fn sync(&mut self) {
+        let _ = self.events.writer.get_ref().sync_data();
+        let _ = self.pcap.writer.sync();
+        if let Some(wire) = self.wire.as_mut() {
+            let _ = wire.writer.sync();
+        }
+        self.last_sync = std::time::Instant::now();
+        self.dirty = false;
+    }
+}
+
+/// Cuts a record's base64 `payload` to `max` bytes, noting `payload_bytes` and
+/// `payload_truncated`
+fn trim_payload(record: &mut Value, max: usize) {
+    let Some(encoded) = record["payload"].as_str() else { return };
+    if encoded.len() <= max.div_ceil(3) * 4 {
+        return;
+    }
+    let Ok(bytes) = fakenet_schema::decode_base64(encoded) else { return };
+    record["payload_bytes"] = Value::from(bytes.len());
+    record["payload_truncated"] = Value::Bool(true);
+    record["payload"] = Value::String(fakenet_schema::encode_base64(&bytes[..max.min(bytes.len())]));
+}
+
+fn since_epoch() -> std::time::Duration {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default()
+}
+
 /// How many recent records stay in memory (for the live dashboard)
 const RECENT: usize = 5000;
+/// Payload bytes kept per record in that ring (the event log has them all)
+const RECENT_PAYLOAD: usize = 4096;
 
 pub struct Capture {
     dir: PathBuf,
     limits: Limits,
-    events: Mutex<EventLog>,
+    /// To the writer thread (None once dropped)
+    jobs: Option<std::sync::mpsc::SyncSender<Job>>,
+    writer: Option<std::thread::JoinHandle<()>>,
     /// (sequence number, record), newest last
     recent: Mutex<std::collections::VecDeque<(u64, Value)>>,
     sequence: AtomicU64,
-    pcap: Mutex<Pcap>,
-    /// wire.pcap: real packets, when a wire capture runs
-    wire: Mutex<Option<Pcap>>,
     file_counter: AtomicU64,
     files_bytes: AtomicU64,
     /// YARA scanning of saved files, when rules are configured
@@ -154,14 +307,24 @@ impl Capture {
             .map(|entries| entries.flatten().filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum())
             .unwrap_or(0);
         let pcap = pcap::PcapWriter::create(&dir.join("traffic.pcap"))?;
+        let writer = Writer {
+            dir: dir.to_path_buf(),
+            limits,
+            events: EventLog { writer: BufWriter::with_capacity(64 * 1024, events), bytes },
+            pcap: Pcap { writer: pcap, bytes: 24 },
+            wire: None,
+            last_sync: std::time::Instant::now(),
+            dirty: false,
+        };
+        let (jobs, receiver) = std::sync::mpsc::sync_channel(QUEUE);
+        let writer = std::thread::Builder::new().name("capture-writer".into()).spawn(move || writer.run(receiver))?;
         Ok(Arc::new(Capture {
             dir: dir.to_path_buf(),
             limits,
-            events: Mutex::new(EventLog { writer: BufWriter::new(events), bytes }),
+            jobs: Some(jobs),
+            writer: Some(writer),
             recent: Mutex::new(std::collections::VecDeque::with_capacity(RECENT)),
             sequence: AtomicU64::new(0),
-            pcap: Mutex::new(Pcap { writer: pcap, bytes: 24 }),
-            wire: Mutex::new(None),
             file_counter: AtomicU64::new(0),
             files_bytes: AtomicU64::new(files_bytes),
             yara: Mutex::new(None),
@@ -177,8 +340,21 @@ impl Capture {
         (records, latest)
     }
 
-    /// The event logs, oldest first (rotated ones, then the current one)
+    /// Waits until everything logged so far is written and flushed
+    pub fn flush(&self) {
+        let (done, wait) = std::sync::mpsc::channel();
+        if self.send(Job::Flush(done)) {
+            let _ = wait.recv();
+        }
+    }
+
+    fn send(&self, job: Job) -> bool {
+        self.jobs.as_ref().is_some_and(|jobs| jobs.send(job).is_ok())
+    }
+
+    /// The event logs, oldest first (rotated ones, then the current one), flushed
     pub fn event_files(&self) -> Vec<PathBuf> {
+        self.flush();
         let mut files: Vec<PathBuf> = (1..=self.limits.keep).rev().map(|n| numbered(&self.dir, "events.jsonl", n)).filter(|p| p.exists()).collect();
         files.push(self.dir.join("events.jsonl"));
         files
@@ -196,7 +372,7 @@ impl Capture {
     pub fn finish_scans(&self) {
         let scanner = self.yara.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(scanner) = scanner {
-            scanner.finish();
+            scanner.finish(yara::FINISH_LIMIT);
         }
     }
 
@@ -212,8 +388,9 @@ impl Capture {
         if let Value::Object(fields) = fields {
             record.extend(fields);
         }
-        let record = Value::Object(record);
+        let mut record = Value::Object(record);
         let line = record.to_string();
+        trim_payload(&mut record, RECENT_PAYLOAD);
         {
             let sequence = self.sequence.fetch_add(1, Ordering::Relaxed) + 1;
             let mut recent = self.recent.lock().unwrap_or_else(|e| e.into_inner());
@@ -222,20 +399,7 @@ impl Capture {
             }
             recent.push_back((sequence, record));
         }
-        let mut events = self.events.lock().unwrap_or_else(|e| e.into_inner());
-        if self.limits.max_events_bytes > 0 && events.bytes + line.len() as u64 + 1 > self.limits.max_events_bytes && events.bytes > 0 {
-            let _ = events.writer.flush();
-            rotate(&self.dir, "events.jsonl", self.limits.keep);
-            match OpenOptions::new().create(true).append(true).open(self.dir.join("events.jsonl")) {
-                Ok(file) => *events = EventLog { writer: BufWriter::new(file), bytes: 0 },
-                Err(e) => tracing::warn!("Could not rotate the event log: {e}"),
-            }
-        }
-        // Best effort: a full disk must not take the fake services down
-        if writeln!(events.writer, "{line}").and_then(|_| events.writer.flush()).is_err() {
-            tracing::warn!("Could not write to the event log");
-        }
-        events.bytes += line.len() as u64 + 1;
+        self.send(Job::Record(line));
     }
 
     /// Saves a payload under files/, named from a prefix and a sanitized client-supplied name
@@ -288,48 +452,23 @@ impl Capture {
     /// Records one real IP packet into wire.pcap (created on first use, rotated like
     /// traffic.pcap)
     pub fn wire_packet(&self, packet: &[u8]) {
-        let mut wire = self.wire.lock().unwrap_or_else(|e| e.into_inner());
-        if wire.is_none() {
-            if self.dir.join("wire.pcap").exists() {
-                // Never truncate an earlier capture, whatever `keep` says
-                rotate(&self.dir, "wire.pcap", self.limits.keep.max(1));
-            }
-            match pcap::PcapWriter::create(&self.dir.join("wire.pcap")) {
-                Ok(writer) => *wire = Some(Pcap { writer, bytes: 24 }),
-                Err(e) => {
-                    tracing::warn!("Could not create wire.pcap: {e}");
-                    return;
-                }
-            }
-        }
-        let Some(pcap) = wire.as_mut() else { return };
-        Self::write_rotating(&self.dir, "wire.pcap", &self.limits, pcap, vec![packet.to_vec()]);
-    }
-
-    fn write_rotating(dir: &Path, name: &str, limits: &Limits, pcap: &mut Pcap, packets: Vec<Vec<u8>>) {
-        for packet in packets {
-            let size = packet.len() as u64 + 16;
-            if limits.max_pcap_bytes > 0 && pcap.bytes + size > limits.max_pcap_bytes {
-                rotate(dir, name, limits.keep);
-                match pcap::PcapWriter::create(&dir.join(name)) {
-                    Ok(writer) => *pcap = Pcap { writer, bytes: 24 },
-                    Err(e) => {
-                        tracing::warn!("Could not rotate {name}: {e}");
-                        return;
-                    }
-                }
-            }
-            if pcap.writer.write(&packet).is_err() {
-                tracing::warn!("Could not write to {name}");
-                return;
-            }
-            pcap.bytes += size;
-        }
+        self.send(Job::Wire(packet.to_vec(), since_epoch()));
     }
 
     fn write_packets(&self, packets: Vec<Vec<u8>>) {
-        let mut pcap = self.pcap.lock().unwrap_or_else(|e| e.into_inner());
-        Self::write_rotating(&self.dir, "traffic.pcap", &self.limits, &mut pcap, packets);
+        if !packets.is_empty() {
+            self.send(Job::Packets(packets, since_epoch()));
+        }
+    }
+}
+
+impl Drop for Capture {
+    /// Lets the writer finish the queue, flush and sync
+    fn drop(&mut self) {
+        drop(self.jobs.take());
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.join();
+        }
     }
 }
 
@@ -380,6 +519,7 @@ mod tests {
         for _ in 0..10 {
             capture.udp_datagram(a, b, &[0u8; 100]);
         }
+        capture.flush();
         assert!(dir.join("traffic.1.pcap").exists());
         assert!(std::fs::metadata(dir.join("traffic.pcap")).unwrap().len() <= 600);
 

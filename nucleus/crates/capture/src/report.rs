@@ -110,6 +110,12 @@ fn explorer_section(html: &mut String, map: &Value) {
 }
 
 /// The report, with the explorer's map (explorer-map.json) when exploration ran
+/// Records listed one by one; past it the report keeps its summaries and says how many
+/// more are in events.jsonl (a browser can't open a multi-GB page)
+const MAX_LISTED: usize = 20_000;
+/// Values shown per summary section
+const MAX_TALLIED: usize = 1_000;
+
 pub fn render_with_map(records: &[Value], map: Option<&Value>) -> String {
     let mut domains = Tally::default();
     let mut urls = Tally::default();
@@ -212,9 +218,12 @@ pub fn render_with_map(records: &[Value], map: Option<&Value>) -> String {
             continue;
         }
         let _ = write!(html, "<section class=\"indicator\"><h3>{} <span class=\"count\">{}</span></h3><ul>", escape(title), tally.0.len());
-        for (value, count) in &tally.0 {
+        for (value, count) in tally.0.iter().take(MAX_TALLIED) {
             let times = if *count > 1 { format!(" <span class=\"times\">×{count}</span>") } else { String::new() };
             let _ = write!(html, "<li><code>{}</code>{times}</li>", escape(value));
+        }
+        if tally.0.len() > MAX_TALLIED {
+            let _ = write!(html, "<li class=\"more\">… {} more (see indicators.csv)</li>", tally.0.len() - MAX_TALLIED);
         }
         html.push_str("</ul></section>");
     }
@@ -226,13 +235,20 @@ pub fn render_with_map(records: &[Value], map: Option<&Value>) -> String {
         explorer_section(&mut html, map);
     }
     html.push_str("<h2>All records, by process</h2>");
+    if records.len() > MAX_LISTED {
+        let _ = write!(html, "<p class=\"meta\">The first {MAX_LISTED} of {} records are listed; events.jsonl has them all.</p>", records.len());
+    }
+    let mut listed = 0usize;
     for (process, protocols) in &by_process {
         let total: usize = protocols.values().map(Vec::len).sum();
         let _ = write!(html, "<details class=\"process\" open><summary>{} <span class=\"count\">{total}</span></summary>", escape(process));
         for (protocol, records) in protocols {
             let _ = write!(html, "<details class=\"protocol\"><summary>{} <span class=\"count\">{}</span></summary><ol>", escape(&protocol.to_uppercase()), records.len());
             for record in records {
-                write_record(&mut html, record);
+                if listed < MAX_LISTED {
+                    write_record(&mut html, record);
+                    listed += 1;
+                }
             }
             html.push_str("</ol></details>");
         }
@@ -241,7 +257,10 @@ pub fn render_with_map(records: &[Value], map: Option<&Value>) -> String {
     if !link.is_empty() {
         let _ = write!(html, "<details class=\"process\"><summary>Nucleus &amp; daemon link <span class=\"count\">{}</span></summary><ol>", link.len());
         for record in &link {
-            write_record(&mut html, record);
+            if listed < MAX_LISTED {
+                write_record(&mut html, record);
+                listed += 1;
+            }
         }
         html.push_str("</ol></details>");
     }
@@ -299,6 +318,17 @@ mod tests {
         assert!(html.contains("c2.example (A)") && html.contains("timeout") && html.contains("c2-gate"));
         assert!(html.contains("evil (PID 6)") && html.contains("Nucleus &amp; daemon link"));
         assert!(html.contains("default-src 'none'"));
+    }
+
+    #[test]
+    fn huge_captures_keep_a_bounded_report() {
+        let records: Vec<Value> = (0..MAX_LISTED + 500)
+            .map(|i| json!({ "kind": "event", "protocol": "http", "src": "10.0.0.5:1", "dst": "198.18.0.1:80", "meta": { "method": "GET", "host": "c2.example", "path": format!("/{i}") } }))
+            .collect();
+        let html = render(&records);
+        assert!(html.contains(&format!("The first {MAX_LISTED} of {} records are listed", MAX_LISTED + 500)));
+        assert_eq!(html.matches("<li><div class=\"event-head\">").count(), MAX_LISTED);
+        assert!(html.contains(&format!("… {} more (see indicators.csv)", MAX_LISTED + 500 - MAX_TALLIED)));
     }
 }
 

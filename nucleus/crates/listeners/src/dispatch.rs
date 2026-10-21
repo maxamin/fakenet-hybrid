@@ -40,12 +40,28 @@ pub async fn handle_tcp(ctx: Arc<Context>, listener: Arc<crate::server::Listener
 /// A stream tunnelled through an HTTP proxy CONNECT: a new session (to the tunnel's
 /// target), sniffed like an "auto" listener's connection
 pub(crate) fn serve_tunnel(parent: &Session, stream: BoxStream, target: String, dst: SocketAddr) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> {
+    // Tunnels inside tunnels are bounded, and each one counts against [limits] like a connection
+    if parent.tunnel_depth >= MAX_TUNNEL_DEPTH {
+        parent.log("tunnel_refused", json!({ "target": target, "reason": "nesting" }));
+        return Box::pin(async { Ok(()) });
+    }
+    let Some(permit) = parent.ctx.limits.admit(parent.builder.src.ip(), &parent.listener) else {
+        parent.log("tunnel_refused", json!({ "target": target, "reason": "limits" }));
+        return Box::pin(async { Ok(()) });
+    };
     let mut session = Session::new(parent.ctx.clone(), &parent.listener, Protocol::Raw, Transport::Tcp, parent.builder.src, parent.local, Some(dst));
+    session.tunnel_depth = parent.tunnel_depth + 1;
     session.builder.dst = dst;
     session.tls_fallback_name = Some(target.rsplit_once(':').map(|(host, _)| host).unwrap_or(&target).trim_matches(['[', ']']).to_string());
     session.log("proxy_tunnel", json!({ "parent_session": parent.builder.session_id, "target": target }));
-    Box::pin(serve(session, stream, ListenerProtocol::Auto(AutoKeyword::Auto), false))
+    Box::pin(async move {
+        let _permit = permit;
+        serve(session, stream, ListenerProtocol::Auto(AutoKeyword::Auto), false).await
+    })
 }
+
+/// Proxy tunnels nested in one another (CONNECT through CONNECT ...)
+const MAX_TUNNEL_DEPTH: u8 = 4;
 
 /// Unwraps TLS and/or sniffs as configured, then runs the protocol's handler
 pub(crate) async fn serve(mut session: Session, mut stream: BoxStream, protocol: ListenerProtocol, tls: bool) -> anyhow::Result<()> {

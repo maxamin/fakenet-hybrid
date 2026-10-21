@@ -401,6 +401,8 @@ async fn main() -> anyhow::Result<()> {
     if let Some(outcome) = &outcome {
         println!("Run finished ({}): {}", outcome.reason, capture.dir().display());
     }
+    // Background tasks may still hold the capture: write its queue out now
+    capture.flush();
     match stop_error {
         Some(e) => Err(e.context("removing the diversion")),
         None => Ok(()),

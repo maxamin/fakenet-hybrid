@@ -31,6 +31,7 @@ pub struct Nucleus {
     pub server: Server,
     pub dir: PathBuf,
     pub ca: Arc<TlsAuthority>,
+    pub capture: Arc<Capture>,
 }
 
 impl Nucleus {
@@ -54,9 +55,10 @@ impl Nucleus {
         let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("listeners-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         let ca = Arc::new(TlsAuthority::generate().unwrap());
+        let capture = Capture::open(&dir).unwrap();
         let ctx = Arc::new(Context {
             link: Link::start(link),
-            capture: Capture::open(&dir).unwrap(),
+            capture: capture.clone(),
             defaults: arc_swap::ArcSwap::from_pointee(defaults),
             tls: ca.clone(),
             timeout: Duration::from_secs(5),
@@ -69,7 +71,7 @@ impl Nucleus {
             hooks,
         });
         let server = Server::start(ctx, "127.0.0.1".parse().unwrap(), listeners).await.unwrap();
-        Nucleus { server, dir, ca }
+        Nucleus { server, dir, ca, capture }
     }
 
     pub fn address(&self, name: &str) -> SocketAddr {
@@ -77,6 +79,7 @@ impl Nucleus {
     }
 
     pub fn events(&self) -> Vec<Value> {
+        self.capture.flush();
         std::fs::read_to_string(self.dir.join("events.jsonl")).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
     }
 

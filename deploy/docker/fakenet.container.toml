@@ -58,6 +58,7 @@ http_url = "http://127.0.0.1:8091/decide"
 deadline_ms = 200                # per decision; on timeout/error the defaults below apply
 backoff_initial_ms = 100
 backoff_max_ms = 10000
+max_payload_kb = 1024            # payload sent to the daemon per event; larger ones are cut (meta.payload_truncated)
 # The shared secret authenticating the link both ways (strongly recommended: without it any
 # local process could pose as the daemon). Create it with:
 #   fakenet-nucleus --generate-secret link.secret

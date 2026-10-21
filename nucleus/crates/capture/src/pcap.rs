@@ -35,14 +35,29 @@ impl PcapWriter {
         Ok(PcapWriter { out })
     }
 
+    /// Appends a packet stamped now, and flushes
     pub fn write(&mut self, packet: &[u8]) -> std::io::Result<()> {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-        self.out.write_all(&(now.as_secs() as u32).to_le_bytes())?;
-        self.out.write_all(&now.subsec_micros().to_le_bytes())?;
+        self.write_at(packet, SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default())?;
+        self.flush()
+    }
+
+    /// Appends a packet seen at `time` (since the Unix epoch), buffered until `flush`
+    pub fn write_at(&mut self, packet: &[u8], time: std::time::Duration) -> std::io::Result<()> {
+        self.out.write_all(&(time.as_secs() as u32).to_le_bytes())?;
+        self.out.write_all(&time.subsec_micros().to_le_bytes())?;
         self.out.write_all(&(packet.len() as u32).to_le_bytes())?;
         self.out.write_all(&(packet.len() as u32).to_le_bytes())?;
-        self.out.write_all(packet)?;
+        self.out.write_all(packet)
+    }
+
+    pub fn flush(&mut self) -> std::io::Result<()> {
         self.out.flush()
+    }
+
+    /// Flushes and asks the OS to write the data to disk
+    pub fn sync(&mut self) -> std::io::Result<()> {
+        self.out.flush()?;
+        self.out.get_ref().sync_data()
     }
 }
 

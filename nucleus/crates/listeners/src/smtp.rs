@@ -58,7 +58,7 @@ pub async fn handle(stream: BoxStream, mut session: Session) -> anyhow::Result<(
             "DATA" => {
                 lines.send(&session, b"354 End data with <CR><LF>.<CR><LF>\r\n").await?;
                 let message = read_message(&mut lines, &session).await?;
-                let meta = record_message(&session, &envelope, &message);
+                let meta = record_message(&session, &envelope, &message).await;
                 envelope = Envelope::default();
                 if !lines.respond(&mut session, &message, meta, "250 OK queued as FAKENET\r\n".into(), false).await? {
                     return Ok(());
@@ -162,13 +162,13 @@ async fn read_message(lines: &mut Lines, session: &Session) -> anyhow::Result<Ve
 }
 
 /// Saves & logs a message; returns the event meta describing it
-fn record_message(session: &Session, envelope: &Envelope, message: &[u8]) -> serde_json::Value {
+async fn record_message(session: &Session, envelope: &Envelope, message: &[u8]) -> serde_json::Value {
     let text = String::from_utf8_lossy(message);
     let subject = text
         .lines()
         .take_while(|l| !l.is_empty())
         .find_map(|l| l.split_once(':').filter(|(name, _)| name.eq_ignore_ascii_case("subject")).map(|(_, v)| v.trim().to_string()));
-    let saved = session.ctx.capture.save_file("smtp", "message.eml", message).ok().map(|p| p.display().to_string());
+    let saved = session.save_file("smtp", "message.eml", hyper::body::Bytes::copy_from_slice(message)).await;
     let meta = json!({
         "command": "MESSAGE", "from": envelope.from, "to": envelope.to, "subject": subject,
         "size": message.len(), "saved": saved,

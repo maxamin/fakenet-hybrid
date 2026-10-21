@@ -135,6 +135,8 @@ pub struct DaemonConfig {
     pub deadline_ms: u64,
     pub backoff_initial_ms: u64,
     pub backoff_max_ms: u64,
+    /// Payload sent to the daemon per event (KB); larger ones are cut (meta.payload_truncated)
+    pub max_payload_kb: u64,
     /// Shared secret authenticating the link both ways (and /health details). Create it
     /// with `fakenet-nucleus --generate-secret PATH`; the daemon reads the same file.
     pub secret_file: Option<PathBuf>,
@@ -148,6 +150,7 @@ impl Default for DaemonConfig {
             deadline_ms: 200,
             backoff_initial_ms: 100,
             backoff_max_ms: 10_000,
+            max_payload_kb: 1024,
             secret_file: None,
         }
     }
@@ -310,6 +313,7 @@ impl Config {
             deadline: Duration::from_millis(self.daemon.deadline_ms),
             backoff_initial: Duration::from_millis(self.daemon.backoff_initial_ms),
             backoff_max: Duration::from_millis(self.daemon.backoff_max_ms),
+            max_payload: usize::try_from(self.daemon.max_payload_kb.saturating_mul(1024)).unwrap_or(usize::MAX),
         }
     }
 }
@@ -327,7 +331,7 @@ fn loopback_url(url: &str) -> bool {
 /// The HTML report of event logs (in order, e.g. rotated ones first), with the explorer's
 /// map if there is one next to them
 pub fn write_report(event_files: &[PathBuf], output: &Path) -> anyhow::Result<()> {
-    let records = read_records(event_files)?;
+    let records = read_records_with(event_files, Some(REPORT_PAYLOAD_BYTES))?;
     let map = event_files
         .last()
         .and_then(|f| f.parent())
@@ -337,12 +341,43 @@ pub fn write_report(event_files: &[PathBuf], output: &Path) -> anyhow::Result<()
 }
 
 pub fn read_records(event_files: &[PathBuf]) -> anyhow::Result<Vec<serde_json::Value>> {
+    read_records_with(event_files, None)
+}
+
+/// Payload bytes kept per record for the report and indicators (the full payloads stay in
+/// events.jsonl and files/)
+const REPORT_PAYLOAD_BYTES: usize = 1024;
+
+/// Parses event files line by line; with `max_payload`, each record's payload is cut to that
+/// many bytes (`payload_bytes` and `payload_truncated` say so), which keeps a large capture's
+/// report within memory
+pub fn read_records_with(event_files: &[PathBuf], max_payload: Option<usize>) -> anyhow::Result<Vec<serde_json::Value>> {
+    use std::io::BufRead as _;
     let mut records = Vec::new();
     for file in event_files {
-        let text = std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
-        records.extend(text.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()));
+        let reader = std::io::BufReader::new(std::fs::File::open(file).with_context(|| format!("reading {}", file.display()))?);
+        for line in reader.split(b'\n') {
+            let line = line.with_context(|| format!("reading {}", file.display()))?;
+            let Ok(mut record) = serde_json::from_slice::<serde_json::Value>(&line) else { continue };
+            if let Some(max) = max_payload {
+                trim_payload(&mut record, max);
+            }
+            records.push(record);
+        }
     }
     Ok(records)
+}
+
+fn trim_payload(record: &mut serde_json::Value, max: usize) {
+    let Some(encoded) = record["payload"].as_str() else { return };
+    // Base64: 4 characters per 3 bytes
+    if encoded.len() <= max.div_ceil(3) * 4 {
+        return;
+    }
+    let Ok(bytes) = fakenet_schema::decode_base64(encoded) else { return };
+    record["payload_bytes"] = json!(bytes.len());
+    record["payload_truncated"] = json!(true);
+    record["payload"] = json!(fakenet_schema::encode_base64(&bytes[..max.min(bytes.len())]));
 }
 
 /// Writes the event logs' indicators to `dir`: indicators.csv, indicators.stix.json (STIX
@@ -350,7 +385,7 @@ pub fn read_records(event_files: &[PathBuf]) -> anyhow::Result<Vec<serde_json::V
 /// read from dir/run.json when there is one. Returns how many indicators there were.
 pub fn write_indicators(event_files: &[PathBuf], dir: &Path, sample: Option<&serde_json::Value>) -> anyhow::Result<usize> {
     use fakenet_capture::indicators;
-    let records = read_records(event_files)?;
+    let records = read_records_with(event_files, Some(REPORT_PAYLOAD_BYTES))?;
     let found = indicators::collect(&records);
     let from_run = std::fs::read_to_string(dir.join("run.json")).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).map(|run| run["sample"].clone());
     let sample = sample.or(from_run.as_ref());
@@ -370,7 +405,8 @@ pub async fn watch_coverage(explorer: Arc<fakenet_explorer::Explorer>, dir: Path
     use std::collections::HashMap;
     let mut done: std::collections::HashSet<PathBuf> = Default::default();
     let mut sizes: HashMap<PathBuf, u64> = HashMap::new();
-    let mut offsets: HashMap<PathBuf, usize> = HashMap::new();
+    // Per JSONL file: bytes consumed, and an incomplete last line kept for the next poll
+    let mut tails: HashMap<PathBuf, (u64, Vec<u8>)> = HashMap::new();
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
@@ -379,18 +415,34 @@ pub async fn watch_coverage(explorer: Arc<fakenet_explorer::Explorer>, dir: Path
             let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
             let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             if name.ends_with(".jsonl") {
-                let Ok(text) = std::fs::read_to_string(&path) else { continue };
-                let start = offsets.get(&path).copied().unwrap_or(0).min(text.len());
-                // Only complete lines; a partial last line waits for the next poll
-                let complete = text[start..].rfind('\n').map(|i| start + i + 1).unwrap_or(start);
-                for line in text[start..complete].lines().filter(|l| !l.trim().is_empty()) {
-                    match explorer.ingest_coverage_line(line) {
+                let (offset, partial) = tails.entry(path.clone()).or_default();
+                if size < *offset {
+                    // Truncated or replaced: start over
+                    *offset = 0;
+                    partial.clear();
+                }
+                if size == *offset {
+                    continue;
+                }
+                let lines = match read_new_lines(&path, offset, partial) {
+                    Ok(lines) => lines,
+                    Err(e) => {
+                        tracing::debug!("coverage file {name}: {e}");
+                        continue;
+                    }
+                };
+                for line in lines {
+                    // Bytes, decoded per line: one bad line doesn't hide the rest of the file
+                    let line = String::from_utf8_lossy(&line);
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    match explorer.ingest_coverage_line(&line) {
                         Ok(new) if new > 0 => capture.log("coverage", json!({ "source": name, "new_functions": new })),
                         Ok(_) => {}
                         Err(e) => tracing::debug!("coverage line in {name}: {e}"),
                     }
                 }
-                offsets.insert(path, complete);
             } else if name.ends_with(".log") && !done.contains(&path) {
                 // drcov writes at process exit: wait until the size is stable
                 if sizes.insert(path.clone(), size) != Some(size) {
@@ -404,6 +456,33 @@ pub async fn watch_coverage(explorer: Arc<fakenet_explorer::Explorer>, dir: Path
             }
         }
     }
+}
+
+/// The complete lines appended to `path` since `offset` (only the new bytes are read),
+/// holding a trailing partial line in `partial` until its newline arrives
+fn read_new_lines(path: &Path, offset: &mut u64, partial: &mut Vec<u8>) -> std::io::Result<Vec<Vec<u8>>> {
+    use std::io::{Read as _, Seek as _};
+    /// Read per poll, so a huge file is consumed over several polls
+    const CHUNK: u64 = 8 * 1024 * 1024;
+    /// A "line" longer than this is dropped rather than buffered forever
+    const MAX_LINE: usize = 1024 * 1024;
+    let mut file = std::fs::File::open(path)?;
+    file.seek(std::io::SeekFrom::Start(*offset))?;
+    let mut data = Vec::new();
+    file.take(CHUNK).read_to_end(&mut data)?;
+    *offset += data.len() as u64;
+    partial.extend_from_slice(&data);
+    let mut lines = Vec::new();
+    while let Some(end) = partial.iter().position(|&b| b == b'\n') {
+        let rest = partial.split_off(end + 1);
+        let mut line = std::mem::replace(partial, rest);
+        line.pop();
+        lines.push(line);
+    }
+    if partial.len() > MAX_LINE {
+        partial.clear();
+    }
+    Ok(lines)
 }
 
 /// Writes a new random secret readable only by its owner
@@ -657,6 +736,43 @@ mod tests {
         assert!(parse("").is_err()); // no listeners
         assert!(parse(&format!("{listener}{listener}")).is_err()); // duplicate
         assert!(parse(&format!("bogus = 1\n{listener}")).is_err());
+    }
+
+    #[test]
+    fn report_records_keep_a_payload_preview() {
+        let dir = std::env::temp_dir().join(format!("fakenet-trim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = fakenet_schema::encode_base64(&vec![b'A'; 100_000]);
+        let small = fakenet_schema::encode_base64(b"hi");
+        let path = dir.join("events.jsonl");
+        std::fs::write(&path, format!("{{\"kind\":\"event\",\"payload\":\"{big}\"}}\nnot json\n{{\"kind\":\"event\",\"payload\":\"{small}\"}}\n")).unwrap();
+        let records = read_records_with(std::slice::from_ref(&path), Some(1024)).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["payload_bytes"], 100_000);
+        assert_eq!(fakenet_schema::decode_base64(records[0]["payload"].as_str().unwrap()).unwrap().len(), 1024);
+        assert_eq!(records[1]["payload"], small.as_str());
+        assert!(records[1]["payload_truncated"].is_null());
+        assert_eq!(read_records(&[path]).unwrap()[0]["payload"], big.as_str()); // Untrimmed for --infer and friends
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn coverage_files_are_read_incrementally() {
+        let dir = std::env::temp_dir().join(format!("fakenet-coverage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cov.jsonl");
+        std::fs::write(&path, b"{\"a\":1}\n\xff\xfe bad\n{\"b\":").unwrap();
+        let (mut offset, mut partial) = (0, Vec::new());
+        let lines = read_new_lines(&path, &mut offset, &mut partial).unwrap();
+        assert_eq!(lines, [b"{\"a\":1}".to_vec(), b"\xff\xfe bad".to_vec()]); // Invalid UTF-8 doesn't stop the file
+        assert_eq!(partial, b"{\"b\":");
+        std::io::Write::write_all(&mut std::fs::OpenOptions::new().append(true).open(&path).unwrap(), b"2}\n").unwrap();
+        let lines = read_new_lines(&path, &mut offset, &mut partial).unwrap();
+        assert_eq!(lines, [b"{\"b\":2}".to_vec()]);
+        assert_eq!(offset, std::fs::metadata(&path).unwrap().len());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

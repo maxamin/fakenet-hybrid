@@ -16,6 +16,8 @@ import java.util.concurrent.ConcurrentHashMap;
 public class SessionState {
     private static final long IDLE_MILLIS = 3_600_000;
     private static final int MAX_ACTORS = 10_000;
+    /** Keys per actor (rules may build keys from sample data); past it, new keys are ignored */
+    static final int MAX_KEYS = 1_000;
 
     private record Entry(Map<String, Object> values, long touched) {}
 
@@ -25,6 +27,15 @@ public class SessionState {
         long now = System.currentTimeMillis();
         if (actors.size() >= MAX_ACTORS && !actors.containsKey(actor)) {
             actors.entrySet().removeIf(e -> now - e.getValue().touched() > IDLE_MILLIS);
+            if (actors.size() >= MAX_ACTORS) {
+                // All active (a scan from spoofed sources, say): drop the least recently used tenth
+                actors.entrySet().stream()
+                    .sorted(java.util.Comparator.comparingLong(e -> e.getValue().touched()))
+                    .limit(MAX_ACTORS / 10)
+                    .map(Map.Entry::getKey)
+                    .toList()
+                    .forEach(actors::remove);
+            }
         }
         Entry entry = actors.compute(actor, (key, old) -> new Entry(old == null ? new ConcurrentHashMap<>() : old.values(), now));
         return entry.values();
@@ -39,12 +50,24 @@ public class SessionState {
     }
 
     public void put(String actor, String key, Object value) {
-        values(actor).put(key, value);
+        Map<String, Object> values = values(actor);
+        if (values.size() < MAX_KEYS || values.containsKey(key)) {
+            values.put(key, value);
+        }
     }
 
-    /** Adds one to a counter and returns it (1 the first time) */
+    /** Adds one to a counter and returns it (1 the first time; 0 when the actor has too many keys) */
     public long increment(String actor, String key) {
-        return ((Number) values(actor).merge(key, 1L, (a, b) -> ((Number) a).longValue() + 1)).longValue();
+        Map<String, Object> values = values(actor);
+        if (values.size() >= MAX_KEYS && !values.containsKey(key)) {
+            return 0;
+        }
+        return ((Number) values.merge(key, 1L, (a, b) -> ((Number) a).longValue() + 1)).longValue();
+    }
+
+    /** Actors currently kept */
+    public int size() {
+        return actors.size();
     }
 
     public Map<String, Object> all(String actor) {

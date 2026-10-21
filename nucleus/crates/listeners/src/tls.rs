@@ -15,12 +15,15 @@ use rustls::sign::CertifiedKey;
 use time::{Duration, OffsetDateTime};
 
 pub const DEFAULT_HOSTNAME: &str = "fakenet.local";
+/// Leaf certificates kept: names are sample-controlled (DGA SNIs), so the cache is bounded
+const CACHED: usize = 10_000;
 
 pub struct TlsAuthority {
     issuer: Issuer<'static, KeyPair>,
     ca_der: CertificateDer<'static>,
     ca_pem: String,
-    cache: Mutex<HashMap<String, Arc<CertifiedKey>>>,
+    /// Leaf certificates by name, and their insertion order (oldest evicted past CACHED)
+    cache: Mutex<(HashMap<String, Arc<CertifiedKey>>, std::collections::VecDeque<String>)>,
     key_log: OnceLock<Arc<KeyLogFile>>,
 }
 
@@ -122,7 +125,7 @@ impl TlsAuthority {
     }
 
     fn new(ca_der: CertificateDer<'static>, ca_pem: String, issuer: Issuer<'static, KeyPair>) -> TlsAuthority {
-        TlsAuthority { issuer, ca_der, ca_pem, cache: Mutex::new(HashMap::new()), key_log: OnceLock::new() }
+        TlsAuthority { issuer, ca_der, ca_pem, cache: Mutex::new((HashMap::new(), std::collections::VecDeque::new())), key_log: OnceLock::new() }
     }
 
     /// Appends every TLS session's secrets (TLS over TCP and QUIC) to `path`, for
@@ -151,10 +154,10 @@ impl TlsAuthority {
 
     pub fn certificate_for(&self, hostname: &str) -> Result<Arc<CertifiedKey>> {
         let hostname = hostname.trim_end_matches('.').to_ascii_lowercase();
-        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(existing) = cache.get(&hostname) {
+        if let Some(existing) = self.cache.lock().unwrap_or_else(|e| e.into_inner()).0.get(&hostname) {
             return Ok(existing.clone());
         }
+        // Minted without the lock: key generation is slow, and other handshakes must not wait
         let mut params = CertificateParams::default();
         params.distinguished_name.push(DnType::CommonName, hostname.clone());
         params.subject_alt_names = vec![match hostname.parse::<std::net::IpAddr>() {
@@ -181,7 +184,20 @@ impl TlsAuthority {
         let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
         let signing_key = rustls::crypto::ring::sign::any_supported_type(&private_key).map_err(|e| anyhow!("{e}"))?;
         let certified = Arc::new(CertifiedKey::new(vec![cert.der().clone(), self.ca_der.clone()], signing_key));
-        cache.insert(hostname, certified.clone());
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let (certificates, order) = &mut *cache;
+        // Minted concurrently for the same name: keep the first, so the name has one certificate
+        if let Some(existing) = certificates.get(&hostname) {
+            return Ok(existing.clone());
+        }
+        while certificates.len() >= CACHED {
+            match order.pop_front() {
+                Some(oldest) => certificates.remove(&oldest),
+                None => break,
+            };
+        }
+        order.push_back(hostname.clone());
+        certificates.insert(hostname, certified.clone());
         Ok(certified)
     }
 
