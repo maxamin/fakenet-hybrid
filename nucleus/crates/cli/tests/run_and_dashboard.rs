@@ -106,3 +106,51 @@ async fn runs_a_sample_and_serves_the_dashboard() {
     let misp: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(folder.join("indicators.misp.json")).unwrap()).unwrap();
     assert!(misp["Event"]["Attribute"].as_array().unwrap().iter().any(|a| a["type"] == "sha256" && a["value"] == run["sample"]["sha256"]));
 }
+
+/// A sample that daemonises (a descendant in a session of its own) and exits at once: the
+/// run lasts until the timeout, and the descendant is killed with it, not left running
+/// after the nucleus stops. The setsid'd descendant is only tracked with a cgroup (run the
+/// test in a delegated scope: `systemd-run --user --scope -p Delegate=yes cargo test ...`);
+/// without one, its process-group sibling is.
+#[tokio::test]
+async fn a_run_waits_for_and_kills_the_whole_process_tree() {
+    let work = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("run-process-tree");
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    let (http, health) = (free_port(), free_port());
+    std::fs::write(work.join("fakenet.toml"), format!(
+        "[nucleus]\nbind = \"127.0.0.1\"\ncapture_dir = \"runs\"\nhealth = \"127.0.0.1:{health}\"\n[daemon]\nwebsocket_url = \"\"\nhttp_url = \"\"\n[[listener]]\nname = \"HTTP\"\nprotocol = \"http\"\nport = {http}\n"
+    )).unwrap();
+    let marker = format!("fakenet-tree-{}", std::process::id());
+    let sample = work.join("dropper.sh");
+    std::fs::write(&sample, format!("#!/bin/sh\nbash -c 'exec -a {marker}-group sleep 300' &\nsetsid bash -c 'exec -a {marker}-session sleep 300' &\nexit 0\n")).unwrap();
+    std::fs::set_permissions(&sample, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let in_cgroup = std::fs::read_to_string("/proc/self/cgroup").is_ok_and(|c| {
+        let dir = std::path::Path::new("/sys/fs/cgroup").join(c.trim().trim_start_matches("0::/")).join("probe-fakenet");
+        let created = std::fs::create_dir(&dir).is_ok();
+        let _ = std::fs::remove_dir(&dir);
+        created
+    });
+
+    let started = Instant::now();
+    let status = Command::new(env!("CARGO_BIN_EXE_fakenet-nucleus"))
+        .args(["-c", work.join("fakenet.toml").to_str().unwrap(), "--run", sample.to_str().unwrap(), "--timeout", "4"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(started.elapsed() >= Duration::from_secs(4), "the run ended when the dropper exited");
+
+    let alive = |suffix: &str| Command::new("pgrep").args(["-f", &format!("{marker}-{suffix}")]).output().unwrap().status.success();
+    let run = std::fs::read_dir(work.join("runs")).unwrap().next().unwrap().unwrap().path();
+    let summary: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(run.join("run.json")).unwrap()).unwrap();
+    assert_eq!(summary["run"]["ended_by"], "timeout", "{summary}");
+    assert!(!alive("group"), "a descendant in the sample's process group survived the run");
+    if in_cgroup {
+        assert!(!alive("session"), "a descendant in its own session survived the run");
+    } else {
+        let _ = Command::new("pkill").args(["-f", &format!("{marker}-session")]).status();
+        eprintln!("no delegated cgroup here: the setsid'd descendant isn't tracked (cleaned up by the test)");
+    }
+}

@@ -1,5 +1,6 @@
 //! Linux: iptables NAT REDIRECT in our own chains, plus optional NFQUEUE marking of
-//! excluded processes. Only ever touches the `FAKENET` chains and the jumps to them.
+//! excluded processes, plus (`block_undiverted`) a filter chain rejecting whatever the NAT
+//! didn't send to the nucleus. Only ever touches the `FAKENET` chains and the jumps to them.
 
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -52,6 +53,8 @@ pub fn rules(config: &DiverterConfig, plan: &Plan, family: Family) -> Vec<Vec<St
     }
     let marking = config.mode == Mode::SingleHost && !config.excluded_processes.is_empty();
     if marking {
+        // Remembered on the connection, so the filter chain lets its later packets through
+        rules.push(nat(format!("-m mark --mark {MARK} -j CONNMARK --save-mark")));
         rules.push(nat(format!("-m mark --mark {MARK} -j RETURN")));
     }
     for port in &plan.ignore_ports {
@@ -96,13 +99,44 @@ pub fn rules(config: &DiverterConfig, plan: &Plan, family: Family) -> Vec<Vec<St
     rules
 }
 
+/// The filter chain that rejects outbound packets the NAT didn't divert: after the NAT,
+/// diverted traffic is addressed to this host, so anything still bound elsewhere is leaving.
+/// Allowed: loopback, local destinations, `ignore_ports`, excluded processes' connections.
+pub fn block_rules(config: &DiverterConfig, plan: &Plan) -> Vec<Vec<String>> {
+    let mut rules = vec![args(&format!("-t filter -N {CHAIN}"))];
+    let filter = |rule: String| args(&format!("-t filter -A {CHAIN} {rule}"));
+    if config.mode == Mode::SingleHost {
+        rules.push(filter("-o lo -j RETURN".into()));
+        rules.push(filter("-m addrtype --dst-type LOCAL -j RETURN".into()));
+        if !config.excluded_processes.is_empty() {
+            rules.push(filter(format!("-m connmark --mark {MARK} -j RETURN")));
+        }
+    }
+    for port in &plan.ignore_ports {
+        rules.push(filter(format!("-p tcp --dport {port} -j RETURN")));
+        rules.push(filter(format!("-p udp --dport {port} -j RETURN")));
+    }
+    rules.push(filter("-j REJECT".into()));
+    let parent = if config.mode == Mode::SingleHost { "OUTPUT" } else { "FORWARD" };
+    rules.push(args(&format!("-t filter -I {parent} -j {CHAIN}")));
+    rules
+}
+
 /// Commands that undo `rules` (each may fail harmlessly when there's nothing to undo)
 pub fn cleanup_commands() -> Vec<Vec<String>> {
-    let mut commands = Vec::new();
-    for (table, parent) in [("nat", "OUTPUT"), ("nat", "PREROUTING"), ("mangle", "OUTPUT")] {
-        commands.push(args(&format!("-t {table} -D {parent} -j {CHAIN}")));
-    }
-    for table in ["nat", "mangle"] {
+    chain_cleanup(&[("nat", "OUTPUT"), ("nat", "PREROUTING"), ("mangle", "OUTPUT")])
+}
+
+/// Commands that undo `block_rules`
+pub fn block_cleanup_commands() -> Vec<Vec<String>> {
+    chain_cleanup(&[("filter", "OUTPUT"), ("filter", "FORWARD")])
+}
+
+fn chain_cleanup(jumps: &[(&str, &str)]) -> Vec<Vec<String>> {
+    let mut commands: Vec<Vec<String>> = jumps.iter().map(|(table, parent)| args(&format!("-t {table} -D {parent} -j {CHAIN}"))).collect();
+    let mut tables: Vec<&str> = jumps.iter().map(|(table, _)| *table).collect();
+    tables.dedup();
+    for table in tables {
         commands.push(args(&format!("-t {table} -F {CHAIN}")));
         commands.push(args(&format!("-t {table} -X {CHAIN}")));
     }
@@ -122,7 +156,15 @@ fn run(family: Family, args: &[String]) -> anyhow::Result<()> {
 }
 
 fn cleanup_family(family: Family) {
-    for command in cleanup_commands() {
+    run_cleanup(family, cleanup_commands());
+}
+
+fn unblock_family(family: Family) {
+    run_cleanup(family, block_cleanup_commands());
+}
+
+fn run_cleanup(family: Family, commands: Vec<Vec<String>>) {
+    for command in commands {
         // A jump may have been added more than once by a crashed run: delete until gone
         let repeat = if command.contains(&"-D".to_string()) { 8 } else { 1 };
         for _ in 0..repeat {
@@ -133,7 +175,17 @@ fn cleanup_family(family: Family) {
     }
 }
 
+/// Removes everything: the diversion and the outbound block
 pub fn cleanup() -> anyhow::Result<()> {
+    for family in [Family::V4, Family::V6] {
+        cleanup_family(family);
+        unblock_family(family);
+    }
+    Ok(())
+}
+
+/// Removes the diversion only: the outbound block (if any) stays
+pub fn cleanup_diversion() -> anyhow::Result<()> {
     cleanup_family(Family::V4);
     cleanup_family(Family::V6);
     Ok(())
@@ -141,26 +193,49 @@ pub fn cleanup() -> anyhow::Result<()> {
 
 pub struct Active {
     families: Vec<Family>,
+    blocked: Vec<Family>,
+    block_after_stop: bool,
     queue: Option<(Arc<AtomicBool>, JoinHandle<()>)>,
 }
 
 impl Active {
     pub fn start(config: &DiverterConfig, plan: &Plan) -> anyhow::Result<Active> {
         cleanup()?; // Leftovers from a run that was killed
-        let mut families = Vec::new();
+        let (mut families, mut blocked) = (Vec::new(), Vec::new());
+        let undo = |families: &[Family], blocked: &[Family]| {
+            families.iter().for_each(|f| cleanup_family(*f));
+            blocked.iter().for_each(|f| unblock_family(*f));
+        };
         for family in [Family::V4, Family::V6] {
+            // Block first: no window in which undiverted traffic leaves
+            if config.block_undiverted {
+                match block_rules(config, plan).iter().try_for_each(|rule| run(family, rule)) {
+                    Ok(()) => blocked.push(family),
+                    Err(e) if family == Family::V6 && !config.ipv6 => {
+                        tracing::warn!("IPv6 is neither diverted nor blocked (ipv6 = false): {e:#}");
+                        unblock_family(family);
+                    }
+                    Err(e) => {
+                        unblock_family(family);
+                        undo(&families, &blocked);
+                        let hint = if family == Family::V6 { " (no IPv6 here? set [diverter] ipv6 = false)" } else { "" };
+                        return Err(e.context(format!("blocking undiverted {family:?} traffic{hint}")));
+                    }
+                }
+            }
             if family == Family::V6 && !config.ipv6 {
                 continue;
             }
-            let applied = rules(config, plan, family).iter().try_for_each(|rule| run(family, rule));
-            match applied {
+            match rules(config, plan, family).iter().try_for_each(|rule| run(family, rule)) {
                 Ok(()) => families.push(family),
                 Err(e) if family == Family::V6 => {
-                    tracing::warn!("IPv6 traffic is not diverted: {e:#}");
+                    let fate = if blocked.contains(&family) { "blocked" } else { "sent to the real network" };
+                    tracing::warn!("IPv6 traffic is not diverted, but {fate}: {e:#}");
                     cleanup_family(family);
                 }
                 Err(e) => {
                     cleanup_family(family);
+                    undo(&families, &blocked);
                     return Err(e.context("setting up iptables diversion (needs root, and the nat table)"));
                 }
             }
@@ -168,8 +243,8 @@ impl Active {
         let queue = (config.mode == Mode::SingleHost && !config.excluded_processes.is_empty())
             .then(|| start_queue(config.queue_num, config.excluded_processes.clone()))
             .transpose()?;
-        tracing::info!("Diverting traffic ({:?}, {:?})", config.mode, families);
-        Ok(Active { families, queue })
+        tracing::info!("Diverting traffic ({:?}, {:?}); blocking the rest: {:?}", config.mode, families, blocked);
+        Ok(Active { families, blocked, block_after_stop: config.block_after_stop, queue })
     }
 
     pub fn stop(self) -> anyhow::Result<()> {
@@ -180,7 +255,12 @@ impl Active {
             stop.store(true, Ordering::Relaxed);
             let _ = thread.join();
         }
-        tracing::info!("Diversion removed");
+        if self.block_after_stop && !self.blocked.is_empty() {
+            tracing::warn!("Diversion removed; outbound traffic stays blocked. Run `fakenet-nucleus --restore-network` to release it");
+        } else {
+            self.blocked.iter().for_each(|f| unblock_family(*f));
+            tracing::info!("Diversion removed");
+        }
         Ok(())
     }
 }
@@ -208,7 +288,7 @@ fn start_queue(queue_num: u16, excluded: Vec<String>) -> anyhow::Result<(Arc<Ato
             };
             if let Some(flow) = packet::parse(message.get_payload()) {
                 let owner = fakenet_listeners::process::find_process(flow.transport, flow.src, flow.dst);
-                if owner.as_ref().is_some_and(|p| is_excluded(&p.name, &excluded)) {
+                if owner.as_ref().is_some_and(|p| crate::is_excluded_process(p, &excluded)) {
                     message.set_nfmark(message.get_nfmark() | MARK_VALUE);
                 }
             }
@@ -220,10 +300,6 @@ fn start_queue(queue_num: u16, excluded: Vec<String>) -> anyhow::Result<(Arc<Ato
         let _ = queue.unbind(queue_num);
     })?;
     Ok((stop, thread))
-}
-
-pub fn is_excluded(name: &str, excluded: &[String]) -> bool {
-    excluded.iter().any(|e| e.eq_ignore_ascii_case(name))
 }
 
 #[cfg(test)]
@@ -262,6 +338,7 @@ mod tests {
     fn exclusions_add_marking_and_gateways_use_prerouting() {
         let config = DiverterConfig { enabled: true, excluded_processes: vec!["python3".into()], ..DiverterConfig::default() };
         let marked = joined(&rules(&config, &plan(), Family::V6));
+        assert!(marked.contains(&"-t nat -A FAKENET -m mark --mark 0x4b1d/0x4b1d -j CONNMARK --save-mark".to_string()));
         assert!(marked.contains(&"-t nat -A FAKENET -m mark --mark 0x4b1d/0x4b1d -j RETURN".to_string()));
         assert!(marked.iter().any(|r| r.starts_with("-t mangle -A FAKENET -p tcp") && r.ends_with("NFQUEUE --queue-num 4242 --queue-bypass")));
         assert_eq!(marked.last().unwrap(), "-t mangle -I OUTPUT -j FAKENET");
@@ -275,12 +352,32 @@ mod tests {
     }
 
     #[test]
+    fn blocks_whatever_is_not_diverted() {
+        let config = DiverterConfig { enabled: true, excluded_processes: vec!["/usr/bin/python3".into()], ..DiverterConfig::default() };
+        assert_eq!(joined(&block_rules(&config, &plan())), [
+            "-t filter -N FAKENET",
+            "-t filter -A FAKENET -o lo -j RETURN",
+            "-t filter -A FAKENET -m addrtype --dst-type LOCAL -j RETURN",
+            "-t filter -A FAKENET -m connmark --mark 0x4b1d/0x4b1d -j RETURN",
+            "-t filter -A FAKENET -p tcp --dport 22 -j RETURN",
+            "-t filter -A FAKENET -p udp --dport 22 -j RETURN",
+            "-t filter -A FAKENET -j REJECT",
+            "-t filter -I OUTPUT -j FAKENET",
+        ]);
+        let gateway = DiverterConfig { enabled: true, mode: Mode::Gateway, ..DiverterConfig::default() };
+        let rules = joined(&block_rules(&gateway, &plan()));
+        assert_eq!(rules.last().unwrap(), "-t filter -I FORWARD -j FAKENET");
+        assert!(!rules.iter().any(|r| r.contains("LOCAL"))); // Forwarded traffic is never local
+        let unblock = joined(&block_cleanup_commands());
+        assert!(unblock.contains(&"-t filter -D OUTPUT -j FAKENET".to_string()) && unblock.contains(&"-t filter -X FAKENET".to_string()));
+    }
+
+    #[test]
     fn cleanup_undoes_everything_it_could_have_added() {
         let cleanup = joined(&cleanup_commands());
         for jump in ["-t nat -D OUTPUT -j FAKENET", "-t nat -D PREROUTING -j FAKENET", "-t mangle -D OUTPUT -j FAKENET"] {
             assert!(cleanup.contains(&jump.to_string()));
         }
         assert_eq!(cleanup.iter().filter(|c| c.contains("-X FAKENET")).count(), 2);
-        assert!(is_excluded("Python3", &["python3".into()]));
     }
 }

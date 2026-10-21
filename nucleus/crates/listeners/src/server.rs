@@ -126,7 +126,7 @@ async fn serve_udp(ctx: Arc<Context>, config: Arc<Listener>, socket: Arc<UdpSock
     loop {
         tokio::select! {
             received = crate::original_dst::recv_with_original(&socket, &mut buffer) => {
-                let (length, client, original) = match received {
+                let (length, client, arrived) = match received {
                     Ok(received) => received,
                     Err(e) => {
                         // e.g. ICMP port unreachable surfacing on Windows; keep serving
@@ -142,8 +142,13 @@ async fn serve_udp(ctx: Arc<Context>, config: Arc<Listener>, socket: Arc<UdpSock
                     let mut table = sessions.lock().await;
                     if !table.contains_key(&client) {
                         let Some(permit) = ctx.limits.admit(client.ip(), &config.config.name) else { continue };
-                        let redirected = original.filter(|o| *o != local);
-                        let mut session = Session::new(ctx.clone(), &config.config.name, fakenet_schema::Protocol::Raw, Transport::Udp, client, local, redirected);
+                        // Where the datagram arrived (after a REDIRECT: e.g. 127.0.0.1), and
+                        // where the client sent it, from connection tracking
+                        let arrived_at = arrived.unwrap_or(local);
+                        let redirected = crate::original_dst::conntrack_original(17, arrived_at, client)
+                            .or(arrived)
+                            .filter(|o| *o != local);
+                        let mut session = Session::new(ctx.clone(), &config.config.name, fakenet_schema::Protocol::Raw, Transport::Udp, client, arrived_at, redirected);
                         session.custom = config.custom.clone();
                         let protocol = dispatch::udp_protocol(&config.config, &data, session.builder.dst.port());
                         if protocol != fakenet_schema::Protocol::Raw {
@@ -164,7 +169,8 @@ async fn serve_udp(ctx: Arc<Context>, config: Arc<Listener>, socket: Arc<UdpSock
                         return;
                     }
                     if let Some(reply) = dispatch::handle_udp(&mut session, &data, client, &socket).await {
-                        let _ = socket.send_to(&reply, client).await;
+                        // From the address the request arrived at, so a REDIRECT's NAT applies
+                        let _ = crate::original_dst::send_from(&socket, &reply, arrived.map(|a| a.ip()), client).await;
                     }
                 });
             }

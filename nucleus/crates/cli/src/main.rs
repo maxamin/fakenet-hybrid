@@ -22,9 +22,13 @@ struct Args {
     /// Validate the config and exit
     #[arg(long)]
     check: bool,
-    /// Remove any diversion left by a run that was killed, and exit
+    /// Remove any diversion left by a run that was killed, and the outbound block that
+    /// `[diverter] block_after_stop` leaves after a stop, and exit
     #[arg(long)]
     restore_network: bool,
+    /// With --restore-network: remove the diversion only, keeping outbound traffic blocked
+    #[arg(long, requires = "restore_network")]
+    keep_block: bool,
     /// Render an events.jsonl as an HTML report (to --output, default report.html), and exit
     #[arg(long, value_name = "EVENTS")]
     report: Option<PathBuf>,
@@ -50,6 +54,10 @@ struct Args {
     /// An argument for the --run sample (repeat for several)
     #[arg(long = "sample-arg", value_name = "ARG", requires = "run")]
     sample_args: Vec<String>,
+    /// The user the --run sample runs as (Unix). Required when the nucleus runs as root;
+    /// `--run-as root` keeps root explicitly
+    #[arg(long, value_name = "USER", requires = "run")]
+    run_as: Option<String>,
     /// Generate a Camel rule (YAML) replaying a HAR recording (to --output, default stdout)
     #[arg(long, value_name = "HAR")]
     rules_from_har: Option<PathBuf>,
@@ -116,8 +124,8 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     if args.restore_network {
-        fakenet_diverter::restore()?;
-        println!("Network diversion removed");
+        fakenet_diverter::restore(args.keep_block)?;
+        println!("{}", if args.keep_block { "Network diversion removed (outbound traffic stays blocked)" } else { "Network diversion and outbound block removed" });
         return Ok(());
     }
     let mut config = Config::load(&args.config)?;
@@ -125,6 +133,15 @@ async fn main() -> anyhow::Result<()> {
         Some(path) => Some(fakenet_cli::run::Sample::inspect(path, args.sample_args.clone())?),
         None => None,
     };
+    let run_as = match &args.run_as {
+        Some(name) => Some(fakenet_cli::run::RunAs::resolve(name)?),
+        None => None,
+    };
+    #[cfg(unix)]
+    // SAFETY: geteuid has no preconditions
+    if sample.is_some() && run_as.is_none() && unsafe { libc::geteuid() } == 0 {
+        anyhow::bail!("--run as root would give the sample root's power over the diversion and the capture: add --run-as USER (or --run-as root to accept that)");
+    }
     if let Some(sample) = &sample {
         // Each run gets its own folder: <time>-<name>-<sha256 prefix>
         config.nucleus.capture_dir = config.nucleus.capture_dir.join(sample.folder_name());
@@ -253,7 +270,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let outcome = match &sample {
-        Some(sample) => Some(fakenet_cli::run::execute(sample, Duration::from_secs(args.timeout), &capture, shutdown_signal()).await),
+        Some(sample) => Some(fakenet_cli::run::execute(sample, Duration::from_secs(args.timeout), &capture, run_as.as_ref(), shutdown_signal()).await),
         None => {
             shutdown_signal().await;
             None
@@ -262,8 +279,14 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("shutting down");
     health_task.abort();
     drop(server);
+    // A failure here must not cost the report, run.json or the indicators: report it, finish
+    // the outputs, and fail at the end
+    let mut stop_error = None;
     if let Some(diverter) = diverter {
-        diverter.stop()?;
+        if let Err(e) = diverter.stop() {
+            tracing::error!("Removing the diversion failed (check `iptables -t nat -S`): {e:#}");
+            stop_error = Some(e);
+        }
     }
     for task in background {
         task.abort();
@@ -294,7 +317,10 @@ async fn main() -> anyhow::Result<()> {
     if let Some(outcome) = &outcome {
         println!("Run finished ({}): {}", outcome.reason, capture.dir().display());
     }
-    Ok(())
+    match stop_error {
+        Some(e) => Err(e.context("removing the diversion")),
+        None => Ok(()),
+    }
 }
 
 async fn shutdown_signal() {

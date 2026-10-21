@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # Starts the daemon, waits for it, then runs the nucleus in the foreground (PID 1's signals
 # reach it, so `docker stop` is a clean shutdown). A generated link secret authenticates the
 # two to each other inside the container.
@@ -16,7 +16,8 @@ trap 'kill "$DAEMON" 2>/dev/null || true' INT TERM
 # Wait for the daemon's health endpoint (loopback) before starting the nucleus
 i=0
 while [ "$i" -lt 60 ]; do
-    if { exec 3<>/dev/tcp/127.0.0.1/8092 && printf 'GET /observe/health HTTP/1.0\r\n\r\n' >&3 && head -1 <&3 | grep -q 200; } 2>/dev/null; then
+    # bash's /dev/tcp, in a subshell: a refused connection must not end this script
+    if ( exec 3<>/dev/tcp/127.0.0.1/8092 && printf 'GET /observe/health HTTP/1.0\r\n\r\n' >&3 && head -1 <&3 ) 2>/dev/null | grep -q ' 200'; then
         break
     fi
     i=$((i + 1)); sleep 1

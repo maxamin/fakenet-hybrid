@@ -9,7 +9,7 @@ Wants=network-online.target
 Type=simple
 ExecStart=/opt/fakenet-hybrid/bin/fakenet-nucleus -c /etc/fakenet/fakenet.toml
 # Belt and braces: remove any iptables diversion left behind, however the nucleus stopped
-ExecStopPost=/opt/fakenet-hybrid/bin/fakenet-nucleus --restore-network
+ExecStopPost=/opt/fakenet-hybrid/bin/fakenet-nucleus --restore-network --keep-block
 WorkingDirectory=/var/lib/fakenet
 Restart=on-failure
 RestartSec=2

@@ -209,6 +209,16 @@ impl Config {
                 bail!("listener {}: tls = true is for TCP (an http listener on UDP is HTTP/3, which is always encrypted)", listener.name);
             }
         }
+        if self.diverter.enabled && !self.diverter.block_undiverted {
+            // Without a catch-all listener and without the block, every other port would
+            // reach the real network
+            let plan = self.plan();
+            for (transport, default) in [("tcp", plan.tcp_default), ("udp", plan.udp_default)] {
+                if default.is_none() {
+                    bail!("[diverter] is on with block_undiverted = false but there is no \"auto\" {transport} listener: {transport} traffic to other ports would reach the real network");
+                }
+            }
+        }
         Ok(())
     }
 

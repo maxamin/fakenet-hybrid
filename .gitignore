@@ -14,3 +14,7 @@ nucleus/fuzz/target/
 nucleus/fuzz/corpus/
 nucleus/fuzz/artifacts/
 nucleus/fuzz/coverage/
+
+# Documentation build output
+docs/_build/
+__pycache__/

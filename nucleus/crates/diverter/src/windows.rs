@@ -212,7 +212,7 @@ fn reflect_outbound(handle: Arc<WinDivert<NetworkLayer>>, reflector: Arc<Mutex<R
                 }
                 pid.map(process_info)
             };
-            let is_excluded = |process: &Option<ProcessInfo>| process.as_ref().is_some_and(|p| p.pid == own_pid || excluded.iter().any(|e| e.eq_ignore_ascii_case(&p.name)));
+            let is_excluded = |process: &Option<ProcessInfo>| process.as_ref().is_some_and(|p| p.pid == own_pid || crate::is_excluded_process(p, &excluded));
             let verdict = reflector.lock().map(|mut r| r.handle(&flow, Instant::now(), owner, is_excluded)).unwrap_or(Verdict::Pass);
             if let Verdict::Reflect { src, dst } = verdict {
                 let gateway_reply = reflector.lock().map(|r| r.is_gateway()).unwrap_or(false);

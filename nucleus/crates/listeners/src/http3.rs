@@ -61,8 +61,11 @@ async fn connection(ctx: Arc<Context>, listener: Arc<crate::server::Listener>, i
     let local: SocketAddr = incoming.local_ip().map(|ip| SocketAddr::new(ip, 0)).unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
     let connection = incoming.await?;
     let sni = connection.handshake_data().and_then(|d| d.downcast::<quinn::crypto::rustls::HandshakeData>().ok()).and_then(|d| d.server_name);
-    let local_port = connection_local_port(&listener);
-    let mut session = Session::new(ctx.clone(), &listener.config.name, Protocol::Http, Transport::Udp, peer, SocketAddr::new(local.ip(), local_port), None);
+    let local = SocketAddr::new(local.ip(), connection_local_port(&listener));
+    // quinn reports where packets arrived (after a REDIRECT); connection tracking knows where
+    // the client sent them
+    let original = crate::original_dst::conntrack_original(17, local, peer).filter(|o| *o != local);
+    let mut session = Session::new(ctx.clone(), &listener.config.name, Protocol::Http, Transport::Udp, peer, local, original);
     session.builder.tls = true;
     session.custom = listener.custom.clone();
     if let Some(reason) = crate::custom::filter(&listener.config, session.builder.process.as_ref(), session.builder.dst.ip()) {

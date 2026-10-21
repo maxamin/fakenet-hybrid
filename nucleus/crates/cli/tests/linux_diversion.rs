@@ -52,9 +52,10 @@ fn events(dir: &PathBuf, kind: &str) -> Vec<Value> {
 async fn diverts_inside_a_network_namespace() {
     assert!(in_private_namespace(), "refusing to touch iptables outside a private network namespace");
     // "The internet": a default route, so remote addresses pass the routing decision and
-    // reach the OUTPUT NAT. Via loopback, since that's the only device a bare namespace is
-    // guaranteed to have; undiverted packets to remote addresses then go nowhere.
-    sh("ip link set lo up && ip route add default dev lo");
+    // reach the OUTPUT NAT. Via a dummy device, where undiverted packets go nowhere (a
+    // default route over loopback breaks REDIRECTed replies on some kernels); loopback if
+    // dummy devices aren't available.
+    sh("ip link set lo up && (ip link add fakenet0 type dummy && ip link set fakenet0 up && ip addr add 10.99.0.2/24 dev fakenet0 && ip route add default dev fakenet0 || ip route add default dev lo)");
 
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("linux-diversion");
     let _ = std::fs::remove_dir_all(&dir);
@@ -98,7 +99,7 @@ async fn diverts_inside_a_network_namespace() {
 
     // DNS to any resolver is answered, and the reply comes back from that resolver's address
     let socket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
-    let query = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x03evil\x07example\x00\x00\x01\x00\x01";
+    let query = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x04evil\x07example\x00\x00\x01\x00\x01";
     socket.send_to(query, "198.51.100.53:53").await.unwrap();
     let mut buffer = [0u8; 512];
     let (length, from) = tokio::time::timeout(Duration::from_secs(5), socket.recv_from(&mut buffer)).await.unwrap().unwrap();
@@ -123,22 +124,42 @@ async fn diverts_inside_a_network_namespace() {
     let detected: Vec<String> = events(&dir, "session_start").iter().map(|e| e["process"]["pid"].to_string()).collect();
     assert!(detected.contains(&std::process::id().to_string()), "attributed to this process: {detected:?}");
 
-    // Stopping removes every trace
+    // Stopping removes the diversion...
     diverter.stop().unwrap();
     let rules = iptables_rules();
     assert!(!rules.contains("FAKENET"), "{rules}");
 
-    // Excluded processes are never diverted: this test's own connection now goes nowhere
-    let own_name = std::fs::read_to_string("/proc/self/comm").unwrap().trim().to_string();
-    let config = DiverterConfig { enabled: true, ipv6: false, excluded_processes: vec![own_name], ..DiverterConfig::default() };
+    // ...but outbound traffic stays blocked until it's released explicitly
+    assert!(filter_rules().contains("-A FAKENET -j REJECT"), "{}", filter_rules());
+    fakenet_diverter::restore(false).unwrap();
+    assert!(!filter_rules().contains("FAKENET"));
+
+    // Without a catch-all listener, other ports are refused at once, never sent out
+    let no_auto = Plan { tcp_default: None, ..plan.clone() };
+    let diverter = Diverter::start(&config, no_auto).unwrap();
+    let attempt = tokio::time::timeout(Duration::from_secs(3), TcpStream::connect("203.0.113.9:4444")).await.expect("rejected, not left to time out");
+    assert_eq!(attempt.unwrap_err().kind(), std::io::ErrorKind::ConnectionRefused);
+    drop(diverter);
+    fakenet_diverter::restore(false).unwrap();
+
+    // Excluded processes (by executable path) are never diverted, nor blocked: this test's own
+    // connection now leaves for the "internet", where nothing answers
+    let own_exe = std::env::current_exe().unwrap().display().to_string();
+    let config = DiverterConfig { enabled: true, ipv6: false, excluded_processes: vec![own_exe], ..DiverterConfig::default() };
     let diverter = Diverter::start(&config, plan).unwrap();
     assert!(iptables_rules().contains("-A FAKENET -m mark --mark 0x4b1d/0x4b1d -j RETURN"));
     let attempt = tokio::time::timeout(Duration::from_millis(1500), TcpStream::connect("93.184.216.34:80")).await;
-    assert!(attempt.is_err() || attempt.unwrap().is_err(), "an excluded process was diverted");
-    drop(diverter); // Dropping restores too
+    assert!(attempt.is_err(), "an excluded process was diverted or blocked: {attempt:?}");
+    drop(diverter); // Dropping removes the diversion too
     assert!(!iptables_rules().contains("FAKENET"));
     let mangle = String::from_utf8_lossy(&Command::new("iptables").args(["-w", "-t", "mangle", "-S"]).output().unwrap().stdout).into_owned();
     assert!(!mangle.contains("FAKENET"), "{mangle}");
+    fakenet_diverter::restore(false).unwrap();
+    assert!(!filter_rules().contains("FAKENET"));
+}
+
+fn filter_rules() -> String {
+    String::from_utf8_lossy(&Command::new("iptables").args(["-w", "-t", "filter", "-S"]).output().unwrap().stdout).into_owned()
 }
 
 #[tokio::test]

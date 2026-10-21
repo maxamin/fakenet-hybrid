@@ -30,13 +30,23 @@ pub struct DiverterConfig {
     pub mode: Mode,
     /// Destination ports never diverted (e.g. 22/3389 to manage a gateway)
     pub ignore_ports: Vec<u16>,
-    /// Process names (e.g. "python3", "procmon.exe") whose traffic is never diverted.
-    /// Single-host mode only. The nucleus never diverts its own traffic.
+    /// Processes whose traffic is never diverted (single-host mode only). An entry with a
+    /// path separator matches the full executable path ("/usr/bin/python3"); a bare name
+    /// matches the executable's file name, which a sample can imitate by naming its own file
+    /// the same, so prefer paths. The nucleus never diverts its own traffic.
     pub excluded_processes: Vec<String>,
     /// Linux NFQUEUE number (used only with excluded_processes)
     pub queue_num: u16,
-    /// Also divert IPv6 (Linux: needs ip6tables NAT; skipped with a warning if missing)
+    /// Also divert IPv6 (Linux: needs ip6tables NAT; without it, IPv6 is blocked rather
+    /// than diverted when `block_undiverted` is on)
     pub ipv6: bool,
+    /// Linux: reject every outbound packet the diversion doesn't send to the nucleus (other
+    /// IP protocols, non-echo ICMP, connections that predate the rules...), except loopback,
+    /// local destinations, `ignore_ports` and excluded processes
+    pub block_undiverted: bool,
+    /// Linux: keep that block in place when the nucleus stops (or crashes), so a sample still
+    /// running never reaches the real network; `fakenet-nucleus --restore-network` lifts it
+    pub block_after_stop: bool,
     /// Answer pings to any address (malware checks connectivity with ICMP echo)
     pub answer_ping: bool,
     /// Windows gateway mode: this host's address(es) on the analysis network
@@ -59,6 +69,8 @@ impl Default for DiverterConfig {
             excluded_processes: Vec::new(),
             queue_num: 4242,
             ipv6: true,
+            block_undiverted: true,
+            block_after_stop: true,
             answer_ping: true,
             gateway_address: Vec::new(),
             fix_dns: false,
@@ -143,10 +155,47 @@ impl Drop for Diverter {
     }
 }
 
-/// Removes anything a previous run left behind (e.g. after it was killed)
-pub fn restore() -> anyhow::Result<()> {
+/// Removes anything a previous run left behind (e.g. after it was killed), including the
+/// outbound block; with `keep_block`, only the diversion (the network stays closed)
+pub fn restore(keep_block: bool) -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
-    return linux::cleanup();
+    return match keep_block {
+        true => linux::cleanup_diversion(),
+        false => linux::cleanup(),
+    };
     #[cfg(not(target_os = "linux"))]
-    Ok(())
+    {
+        let _ = keep_block;
+        Ok(())
+    }
+}
+
+/// Whether `process` is one of `excluded`: entries with a path separator match the
+/// executable's full path, bare names its file name (both case-insensitively). The name a
+/// process gives itself (Linux `comm`) is never used: any process can change it.
+pub fn is_excluded_process(process: &fakenet_schema::ProcessInfo, excluded: &[String]) -> bool {
+    let Some(exe) = process.exe.as_deref() else { return false };
+    let exe = exe.strip_suffix(" (deleted)").unwrap_or(exe);
+    let file_name = exe.rsplit(['/', '\\']).next().unwrap_or(exe);
+    excluded.iter().any(|entry| match entry.contains(['/', '\\']) {
+        true => entry.eq_ignore_ascii_case(exe),
+        false => entry.eq_ignore_ascii_case(file_name),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exclusions_match_executables_not_self_chosen_names() {
+        let process = |name: &str, exe: Option<&str>| fakenet_schema::ProcessInfo { pid: 1, name: name.into(), exe: exe.map(str::to_string) };
+        let list = ["/usr/bin/python3".to_string(), "procmon64.exe".to_string()];
+        assert!(is_excluded_process(&process("python3", Some("/usr/bin/python3")), &list));
+        // A sample calling itself python3 (prctl), or copied elsewhere under that name
+        assert!(!is_excluded_process(&process("python3", Some("/tmp/x/sample")), &list));
+        assert!(!is_excluded_process(&process("python3", Some("/tmp/python3")), &list));
+        assert!(is_excluded_process(&process("x", Some("C:\\Tools\\Procmon64.exe")), &list));
+        assert!(!is_excluded_process(&process("procmon64.exe", None), &list));
+    }
 }

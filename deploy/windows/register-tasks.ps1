@@ -20,7 +20,8 @@ if (-not (Test-Path $Config)) {
     (Get-Content (Join-Path $Root 'config\fakenet.toml')) `
         -replace '^capture_dir = .*', "capture_dir = '$Data\capture'" `
         -replace '^# *secret_file = .*', "secret_file = '$Data\link.secret'" `
-        -replace '"default-files"', "'$Root\config\default-files'" | Set-Content $Config
+        -replace '"default-files"', "'$Root\config\default-files'" `
+        -replace '"fingerprints/([^"]+)"', "'$Root\config\fingerprints\`$1'" | Set-Content $Config
 }
 $Secret = "$Data\link.secret"
 if (-not (Test-Path $Secret)) {

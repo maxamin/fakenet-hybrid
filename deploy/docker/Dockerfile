@@ -10,7 +10,7 @@
 # container; only the fake service ports are published.
 
 # --- Build the nucleus ---
-FROM rust:1.83-slim-bookworm AS nucleus
+FROM rust:1.89-slim-bookworm AS nucleus
 WORKDIR /src
 COPY nucleus/ ./nucleus/
 COPY schema/ ./schema/
@@ -34,11 +34,12 @@ COPY --from=daemon /src/daemon/target/fakenet-daemon.jar ./daemon/fakenet-daemon
 COPY --from=daemon /src/daemon/target/lib ./daemon/lib
 COPY daemon/routes ./routes
 COPY nucleus/config/default-files ./config/default-files
+COPY nucleus/config/fingerprints ./config/fingerprints
 COPY deploy/docker/fakenet.container.toml ./config/fakenet.toml
 COPY deploy/docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN mkdir -p capture audit && chown -R fakenet:fakenet /opt/fakenet && chmod +x /usr/local/bin/entrypoint.sh
 USER fakenet
 # The health endpoint (loopback): the container is healthy once the nucleus serves it
 HEALTHCHECK --interval=15s --timeout=3s --start-period=30s \
-  CMD ["/bin/sh","-c","exec 3<>/dev/tcp/127.0.0.1/8099 && printf 'GET /health HTTP/1.0\\r\\n\\r\\n' >&3 && head -1 <&3 | grep -q 200"]
+  CMD ["/bin/bash","-c","( exec 3<>/dev/tcp/127.0.0.1/8099 && printf 'GET /health HTTP/1.0\\r\\n\\r\\n' >&3 && head -1 <&3 ) | grep -q ' 200'"]
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

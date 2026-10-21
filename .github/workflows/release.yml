@@ -43,6 +43,10 @@ jobs:
         shell: pwsh
         run: |
           Invoke-WebRequest https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip -OutFile $env:RUNNER_TEMP\windivert.zip
+          # Pinned: the DLL and driver ship in signed releases
+          $expected = '63cb41763bb4b20f600b6de04e991a9c2be73279e317d4d82f237b150c5f3f15'
+          $actual = (Get-FileHash -Algorithm SHA256 $env:RUNNER_TEMP\windivert.zip).Hash.ToLower()
+          if ($actual -ne $expected) { throw "WinDivert zip SHA-256 mismatch: $actual" }
           Expand-Archive $env:RUNNER_TEMP\windivert.zip -DestinationPath $env:RUNNER_TEMP
           "WINDIVERT_PATH=$env:RUNNER_TEMP\WinDivert-2.2.2-A\x64" | Out-File -Append $env:GITHUB_ENV
       - name: Build the nucleus & daemon
@@ -61,7 +65,7 @@ jobs:
           Copy-Item "$env:WINDIVERT_PATH\WinDivert.dll","$env:WINDIVERT_PATH\WinDivert64.sys" "$stage\bin\"
           Copy-Item daemon\target\fakenet-daemon.jar "$stage\daemon\"
           Copy-Item daemon\target\lib,daemon\routes "$stage\daemon\" -Recurse
-          Copy-Item nucleus\config\fakenet.toml,nucleus\config\default-files "$stage\config\" -Recurse
+          Copy-Item nucleus\config\fakenet.toml,nucleus\config\default-files,nucleus\config\fingerprints "$stage\config\" -Recurse
           # register-tasks.ps1 & uninstall.ps1 at the install-folder root for the MSI shortcut
           Copy-Item deploy\windows\register-tasks.ps1,deploy\windows\uninstall.ps1 "$stage\"
           Copy-Item deploy\windows\install.ps1 "$stage\deploy\windows\"

@@ -14,6 +14,8 @@ event log records the fallback.
 > link bind to 127.0.0.1 only, and the nucleus refuses any other address.
 
 Design, trade-offs and verification status: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Full documentation (usage, architecture, reference; Read the Docs style): [docs/](docs/index.md).
+Known bugs, risks and improvement ideas: [flaws/](flaws/README.md).
 
 ## What it fakes
 
