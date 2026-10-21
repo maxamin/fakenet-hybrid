@@ -4,8 +4,6 @@ Improvements that aren't defects, roughly by value to analysts.
 
 | ID | Idea | Why |
 |---|---|---|
-| ENH-02 | Fail-closed firewall mode for the Windows diverter, kept after stop (Linux has it) | Fixes LEAK-01 |
-| ENH-03 | Windows sandboxing for `--run`: restricted token, Job Object (Linux has `--run-as`, session and cgroup) | Fixes SEC-01 and SEC-02 |
 | ENH-04 | Per-start capture sub-folders (as `--run` does), plus a `latest` symlink | Makes runs comparable (a restart already archives the previous run to `previous/`) |
 | ENH-05 | Save Redis `SET`/`CONFIG SET` values and Telnet `echo`/`wget` payloads as files | Attack payloads (cron lines, SSH keys, droppers) today exist only as truncated previews and base64 in events |
 | ENH-06 | DNS: EDNS(0), TC bit for UDP answers over 512 bytes, all questions, per-domain AAAA from an IPv6 pool | Fidelity with real resolvers; some samples probe these |

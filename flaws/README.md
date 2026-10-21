@@ -26,16 +26,13 @@ Medium (wrong results or risk in specific conditions), Low (edge cases, fidelity
 
 | ID | Sev. | Status | Summary |
 |---|---|---|---|
-| [LEAK-01](network-leaks.md#leak-01) | High | Confirmed | Windows: diversion is fail-open; stopping or crashing the nucleus puts a running sample online |
-| [SEC-01](security.md#sec-01) | Medium | Confirmed | Windows: `--run` runs the sample as Administrator |
-| [SEC-02](security.md#sec-02) | Medium | Confirmed | Windows: `--run` tracks and kills only the direct child |
 | [LEAK-02](network-leaks.md#leak-02) | Medium | Confirmed | `excluded_processes` matches a name the sample can choose |
 | [SEC-03](security.md#sec-03) | Medium | Confirmed | The dashboard cookie is the link's HMAC key |
 | [SEC-04](security.md#sec-04) | Medium | Confirmed | The link MAC leaves most fields unsigned and has no replay protection |
 | [SEC-05](security.md#sec-05) | Medium | Confirmed | The HTTP fallback channel sends signed events to whoever holds port 8091 |
 | [SEC-06](security.md#sec-06) | Medium | Confirmed | Unauthenticated link by default |
 | [PERF-03](performance-and-dos.md#perf-03) | Low | Confirmed | The memory budget counts one of the nucleus's ~4 copies of a large payload |
-| [ARCH-01](architecture.md#arch-01) | Medium | Confirmed | Windows diverter has never run in CI |
+| [ARCH-01](architecture.md#arch-01) | Medium | Confirmed | The Windows diverter, firewall block and exit guard have never run end to end |
 | [ARCH-02](architecture.md#arch-02) | Medium | Confirmed | Explorer rewards scanning as "new behaviour" |
 | [BUG-16](bugs.md#bug-16) | Low | Confirmed | `nxdomain_random` flags real names with long consonant runs |
 | [SEC-09](security.md#sec-09) | Low | Confirmed | Splunk token as a `-D` property is visible to every local process |
@@ -46,10 +43,10 @@ Medium (wrong results or risk in specific conditions), Low (edge cases, fidelity
 | [ARCH-06](architecture.md#arch-06) | Low | Confirmed | Listener filters close connections; host filters take IPs only |
 | [ARCH-07](architecture.md#arch-07) | Low | Confirmed | Process-wide global state |
 
-Enhancement ideas (`ENH-02` to `ENH-12`) are listed in [enhancements.md](enhancements.md).
+Enhancement ideas (`ENH-04` to `ENH-12`) are listed in [enhancements.md](enhancements.md).
 
 ## Suggested order of work
 
-1. LEAK-01, SEC-01, SEC-02: the Windows side of containment (Linux has it).
+1. ARCH-01: run the Windows containment on a Windows VM.
 2. SEC-04, SEC-05, SEC-06, SEC-03: the link's authentication.
 3. PERF-03 and PERF-08 (minor), LEAK-02, the ARCH items.

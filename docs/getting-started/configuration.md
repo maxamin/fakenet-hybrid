@@ -89,6 +89,8 @@ Each saved file is scanned by `yara -w -a 30 -C` in one background thread.
 | `queue_num` | 4242 | Linux NFQUEUE number, used only with `excluded_processes` |
 | `ipv6` | true | Also install ip6tables rules. A failure is fatal; set `ipv6 = false` where there is no IPv6 (it is then neither diverted nor blocked) |
 | `answer_ping` | true | ICMP echo to any address gets a reply |
+| `block_undiverted` | true | Block outbound (gateway: forwarded) traffic the diversion doesn't send to a listener, except loopback, local destinations, `ignore_ports` and excluded processes (Windows also lets link-local control traffic through). Linux: an iptables REJECT chain; Windows: WinDivert drops it |
+| `block_after_stop` | true | Keep outbound traffic blocked after the nucleus stops or dies, until `--restore-network`. Linux: the iptables block stays; Windows: a firewall block installed on stop, or by a guard process if the nucleus dies |
 | `gateway_address` | `[]` | Windows gateway mode: this host's addresses on the analysis network |
 | `fix_dns`, `fix_dns_server` | false, `192.0.2.53` | Windows: point every interface's DNS at this server while running (FakeNet-NG ModifyLocalDNS); restored on stop |
 | `fix_gateway` | false | Windows: add a default route if there is none (FakeNet-NG FixGateway); removed on stop |

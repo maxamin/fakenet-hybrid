@@ -4,31 +4,6 @@ The threat model: the sample under analysis runs on the same VM as the nucleus a
 It can reach loopback, read world-readable files and the process list, and race for
 ports. It cannot read root-only files.
 
-## SEC-01
-
-**Windows: `--run` runs the sample as Administrator** · Medium · Confirmed
-
-- Where: `nucleus/crates/cli/src/run.rs` (`RunAs::resolve` is Unix-only).
-- What: on Unix, `--run-as USER` (required when the nucleus is root) switches user and
-  groups before exec. On Windows the sample inherits the nucleus's Administrator token.
-- Impact: the sample can close the WinDivert handles, kill the nucleus, read
-  `link.secret`, or tamper with the capture.
-- Fix: `CreateProcessAsUser` with a restricted or low-integrity token, the default when
-  the nucleus is elevated.
-
-## SEC-02
-
-**Windows: `--run` tracks only the direct child** · Medium · Confirmed
-
-- Where: `nucleus/crates/cli/src/run.rs` (`Tree`: session and cgroup are Unix/Linux).
-- What: on Linux the sample gets its own session and cgroup, the run ends when the whole
-  tree has exited, and everything in it is killed. On Windows only the direct child is
-  waited for and killed; descendants survive.
-- Impact: behaviour after the first process exits is missed, and descendants outlive
-  the run (with real network access once the diversion goes: LEAK-01).
-- Fix: a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, assigned at creation
-  (`CREATE_SUSPENDED`, assign, resume); end the run when the job has no processes.
-
 ## SEC-03
 
 **The dashboard cookie is the link secret** · Medium · Confirmed

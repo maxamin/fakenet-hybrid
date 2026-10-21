@@ -12,7 +12,7 @@ Modes are checked in this order. The first one that matches runs and the program
 | `--report EVENTS [-o report.html]` | `write_report` | Render an HTML report from any `events.jsonl` |
 | `--indicators EVENTS [-o DIR]` | `write_indicators` | Write `indicators.csv`, `indicators.stix.json` and `indicators.misp.json` |
 | `--generate-secret PATH` | `generate_secret` | 32 random bytes as hex, `create_new`, mode 0600 on Unix |
-| `--restore-network` | `diverter::restore` | Remove the iptables `FAKENET` chains a killed run left behind (Linux; no-op on Windows) |
+| `--restore-network` | `diverter::restore` | Remove the iptables `FAKENET` chains a killed run left behind (Linux), or the firewall block (Windows) |
 | `-c, --config FILE` | `Config::load` | Default `config/fakenet.toml` |
 | `--check` | | Validate the config, load the fingerprint lists and compile the YARA rules, then exit. A `--run` sample is also hashed |
 | `--run SAMPLE [--timeout 120] [--sample-arg A]...` | `run::Sample::inspect`, `run::execute`, `run::summary` | One run per sample, in a capture folder of its own |
@@ -92,8 +92,9 @@ browser.
 | `summary(sample, outcome, capture)` | The `run.json` content: sample, run, record counts by kind, events by protocol, file names |
 
 On Unix the sample runs as `--run-as USER` (required when the nucleus is root), in its own
-session and (Linux) cgroup; the whole tree is tracked and killed. On Windows it runs with the
-nucleus's privileges and only the direct child is tracked (flaws `SEC-01`, `SEC-02`).
+session and (Linux) cgroup; the whole tree is tracked and killed. On Windows it runs in a Job
+Object (kill on close, no breakaway) with a restricted token unless `--run-as administrator`
+(`run_windows.rs`).
 
 ## `replay.rs`
 

@@ -32,7 +32,8 @@ Logging uses `RUST_LOG` (`tracing-subscriber` env filter; default `info`), for e
 | `--timeout SECS` | 120 | `--run` only: kill the sample and end the run after this long |
 | `--sample-arg ARG` | | `--run` only: an argument for the sample; repeat for several |
 | `--generate-secret PATH` | | Write 32 random bytes as 64 hex characters plus a newline. Fails if the file exists. Mode 0600 on Unix |
-| `--restore-network` | | Linux: remove the `FAKENET` iptables/ip6tables chains a killed run left. Windows: nothing to do |
+| `--restore-network` | | Remove what a run left: Linux, the `FAKENET` iptables/ip6tables chains (with `--keep-block`, only the diversion); Windows, the firewall block, restoring the firewall and forwarding state it changed |
+| `--run-as USER` | | `--run` only. Unix: the account the sample runs as (required when the nucleus runs as root; `root` keeps root). Windows: `restricted` (default: Administrators deny-only, no privileges, medium integrity) or `administrator` |
 | `--report EVENTS` | | Render an HTML report from one `events.jsonl` (to `-o`, default `report.html`). Includes `explorer-map.json` from the same folder if present. Also reads its rotated siblings (`events.N.jsonl`), as does `--indicators` |
 | `--indicators EVENTS` | | Write `indicators.csv`, `indicators.stix.json` and `indicators.misp.json` to `-o DIR` (default: the events file's folder). Uses `DIR/run.json` for the sample if present |
 | `--import-fakenet-ini INI` | | Convert a FakeNet-NG (or fakenet-rs) `default.ini` to TOML (to `-o`, default stdout) |
@@ -91,9 +92,10 @@ sudo fakenet-nucleus -c my.toml --run ./sample.exe --timeout 300 --sample-arg -q
   the output file names.
 
 ```{warning}
-`--run` executes the sample with the nucleus's privileges (root or Administrator), and only
-the direct child is killed. Descendants survive the run, and then the diversion is gone.
-On Windows read flaws SEC-01, SEC-02 and LEAK-01 before relying on it; revert the VM after each run.
+`--run` executes the sample. Unix: as `--run-as USER`, in its own session and (Linux)
+cgroup. Windows: with a restricted token, in a Job Object that kills the whole tree and
+allows no breakaway. Either way the run ends when the whole tree has exited, and what is left
+is killed. Revert the VM after each run all the same.
 ```
 
 ## `--replay`: test rules without traffic

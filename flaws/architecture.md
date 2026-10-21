@@ -5,16 +5,20 @@ maintainers time.
 
 ## ARCH-01
 
-**The Windows diverter has never run automatically** · Medium · Confirmed
+**The Windows code has never run automatically end to end** · Medium · Confirmed
 
-- Where: `nucleus/crates/diverter/src/windows.rs`; CI's `nucleus-windows` job; stated in
-  `docs/ARCHITECTURE.md` ("type-checks for Windows but has not run on Windows").
-- What: the pure reflection logic (`reflect.rs`) is unit-tested on Linux, but the
-  WinDivert glue (`track_owners`, `reflect_outbound`, `reflect_forwarded`, the PowerShell
-  host settings) is untested end to end.
-- Fix: a self-hosted Windows VM runner, or a nightly job on a Windows VM in a cloud
-  account, running the README's manual check (`curl`, `nslookup`, `ping`) through the
-  diverter.
+- Where: `nucleus/crates/diverter/src/windows.rs`, `nucleus/crates/cli/src/run_windows.rs`;
+  CI's `nucleus-windows` job.
+- What: the pure parts are unit-tested on Linux (`reflect.rs` including `drops`,
+  `packet::is_link_local_control`, the firewall scripts in `host_settings.rs`, command-line
+  quoting), and CI's Windows job runs the Job Object and restricted-token tests
+  (`run_windows::tests`). The rest compiles and links for Windows but hasn't run: the WinDivert
+  glue (`track_owners`, `reflect_outbound`, `reflect_forwarded` and their drop of undiverted
+  traffic), the PowerShell host settings, the firewall block (`install_block`,
+  `release_block`) and the exit guard (`--block-after-exit`).
+- Fix: a self-hosted Windows VM runner, or a nightly job on a Windows VM in a cloud account,
+  running the README's manual check (`curl`, `nslookup`, `ping`) through the diverter, then
+  stopping and killing the nucleus and checking that outbound traffic stays blocked.
 
 ## ARCH-02
 

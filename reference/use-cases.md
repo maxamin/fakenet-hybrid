@@ -42,8 +42,7 @@
 
 `sudo fakenet-nucleus -c my.toml --run ./sample --timeout 300 --sample-arg -q`. The
 capture folder becomes `capture/<UTC time>-<name>-<sha256[:12]>/`. Read
-[cli.md](cli.md#run) for the exact lifecycle, and, on Windows, flaws `SEC-01` and `SEC-02`
-before relying on it.
+[cli.md](cli.md#run) for the exact lifecycle, before relying on it.
 
 ## Workflow C: writing a C2 rule
 

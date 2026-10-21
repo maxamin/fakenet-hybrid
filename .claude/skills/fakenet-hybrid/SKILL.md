@@ -85,9 +85,9 @@ Run the narrowest test that covers the change first; the full suite only before 
 
 ## Flaw registry
 
-`flaws/` lists 19 defects (`SEC`, `LEAK`, `BUG`, `PERF`, `DEP`, `ARCH`) plus `ENH` ideas,
-each with `file:line`, impact and a suggested fix. Highest priority: LEAK-01, SEC-01, SEC-02
-(Windows containment), then the link's authentication (SEC-03..06).
+`flaws/` lists 16 defects (`SEC`, `LEAK`, `BUG`, `PERF`, `DEP`, `ARCH`) plus `ENH` ideas,
+each with `file:line`, impact and a suggested fix. Highest priority: the link's authentication
+(SEC-03..06); ARCH-01 (run the Windows containment on Windows).
 
 - Before changing an area, `rg -n 'path/to/file.rs' flaws` to see known issues there.
 - After fixing one: delete its section, its index row in `flaws/README.md`, adjust the

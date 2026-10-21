@@ -92,8 +92,8 @@ removes the iptables rules, finishes YARA scans and writes `report.html` and
 
 ```{warning}
 Stopping the nucleus removes the diversion. On Linux outbound traffic stays blocked until
-`--restore-network`; on Windows anything the sample left running then has the real network
-(flaw LEAK-01). Revert the VM, or kill the sample first.
+`--restore-network` (Linux: iptables; Windows: a firewall block). Revert the VM, or kill the
+sample first.
 ```
 
 If the nucleus was killed (`kill -9`, power loss), clean up with

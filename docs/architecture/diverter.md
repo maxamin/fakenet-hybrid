@@ -5,7 +5,7 @@ on, and only inside the analysis VM.
 
 ```{warning}
 The diverter redirects; it doesn't block. Some traffic still leaves, and stopping the
-nucleus removes the diversion; on Linux outbound traffic stays blocked until `--restore-network` (`block_after_stop`). See flaws LEAK-01 (Windows) and LEAK-02.
+nucleus removes the diversion; outbound traffic stays blocked until `--restore-network` (`block_after_stop`: Linux keeps its iptables block; Windows installs a firewall block on stop, and a guard process installs it if the nucleus dies). See flaw LEAK-02.
 ```
 
 ## The plan
@@ -88,3 +88,16 @@ header checksum and the TCP/UDP checksum; a UDP checksum of 0 becomes 0xffff),
 timeout, IPv4 and IPv6 only, skipping loopback duplicates. Windows: a WinDivert sniff
 handle. Dropping it stops the thread (on Windows the thread isn't joined, because it blocks
 until the next packet).
+
+## Windows containment
+
+| When | What blocks | Source |
+|---|---|---|
+| Running | With `block_undiverted`, WinDivert sees every outbound packet (single host) or forwarded packet (gateway); `reflect::drops` drops what isn't diverted or exempt (`ignore_ports`, excluded processes), except link-local control traffic (`packet::is_link_local_control`: IGMP, 224.0.0.0/24, IPv6 link-local and `ff02::/16`) | `windows.rs` `reflect_outbound`, `reflect_forwarded` |
+| Stopping | With `block_after_stop`, a Windows Firewall rule group `FakeNet hybrid` blocks outbound traffic to every address but loopback (block rules win over allow rules); the firewall is switched on for every profile and IP forwarding off. The previous state goes to `%ProgramData%\FakeNetHybrid\block-state.json` | `host_settings::install_block_script` |
+| Crashing | A detached guard (`fakenet-nucleus --block-after-exit PID`, started with the diversion, outside the task's job when allowed) waits for the nucleus to exit, however it exits, then installs the same block | `windows::guard_exit`, `main.rs` `start_exit_guard` |
+| Released | `--restore-network` removes the rule group and restores the saved profile and forwarding state. The next start does it too, once WinDivert is in place | `host_settings::release_block_script` |
+
+The firewall decides on a connection before WinDivert sees its packets, which is why the
+block can't simply stay on while diverting: the start lifts it only after its own blocking
+(WinDivert) runs.
