@@ -17,6 +17,7 @@ link" group.
 | | `decision` | `request_id`, `route`, `default`, `close`, `delay_ms`, `response_bytes` | `Session::decide` |
 | | `fallback` | `request_id`, `fallback.reason`, `fallback.detail` | `Session::decide` |
 | | `explored` | `request_id`, `template`, `tokens`, `close`, `response_bytes` | `Session::decide` |
+| | `responded` | `request_id`, `responder`, `route`, `detail` (model: `key`, `probability`), `close`, `response_bytes` | `Session::respond` |
 | | `manual` | `request_id`, `verdict` (`send`, `close`), `close`, `response_bytes` | `Session::decide_with_default` |
 | | `hook` | `hook`, `request_id`, `pid`, `process`, `dir`, `results` (`dump`: `regions`, `bytes`, `truncated`; `pause`; `command`: `argv`, `pid`, `exit`), or `error` | `Hooks::fire` |
 | TLS | `tls_handshake` | `sni`, `certificate`, `alpn`, `ja3`, `ja3_string`, `ja4`, `known` | `terminate_tls`, `http3` |

@@ -11,8 +11,11 @@ A FakeNet-NG-style simulator for isolated malware-analysis VMs.
   sniffs the protocol, answers with a built-in default **or** the daemon's decision within
   a deadline (200 ms), records everything.
 - **daemon** (`daemon/`, Java 21, stock Camel 4.18): YAML routes decide answers; hot reload.
-- **link**: WebSocket (primary) + HTTP POST (fallback), HMAC-signed Event/Action JSON.
+- **link**: WebSocket (primary) + HTTP POST (fallback), Event/Action JSON sealed whole (HMAC).
 - **explorer** (optional): answers what rules leave at the default, learning from novelty.
+- **model + responders** (optional): `fakenet-model` learns answers from pcaps (`--learn`);
+  `[[responder]]` entries (learned models, JSON-lines plugins in any language) answer what
+  the rules and the explorer leave. Extending them: the `fakenet-extend` skill.
 
 Full docs: `docs/` (Sphinx + MyST, Read the Docs). Known defects: `flaws/README.md`.
 Read those instead of re-deriving from source.
@@ -52,6 +55,10 @@ not ast-grep). So:
 | Config model + validation, control server | `nucleus/crates/cli/src/lib.rs`; start-up/shutdown in `main.rs` |
 | `--run`, `--replay`, HAR, INI import | `cli/src/{run,replay,har,import}.rs` |
 | Explorer | `nucleus/crates/explorer/src/`, templates in `explorer/templates/default.toml` |
+| Learned models: pcap, flows, analysers, packs | `nucleus/crates/model/src/{pcap,flows,analyze,lib}.rs` |
+| Responder chain, plugin protocol | `listeners/src/responders.rs`; step in `Session::respond`; plugins in `plugins/` |
+| Manual mode, hooks, `--infer/--decode/--diff` | `listeners/src/{manual,hooks,event_filter}.rs`, `cli/src/{infer,diff}.rs` |
+| Skeletons, UML | `scripts/scaffold.py`, `design/*.md` (Mermaid) |
 | Analyst rules, transport routes, SIEM | `daemon/routes/{decisions,link,siem}.yaml`, `daemon/rules-library/` |
 | Install, container, CI | `deploy/`, `scripts/package.sh`, `.github/workflows/` |
 
@@ -70,6 +77,9 @@ not ast-grep). So:
 7. A new protocol touches: `schema::Protocol`, JSON Schema enum, sniffer tables,
    `dispatch::serve`, `WarmUp.PROTOCOLS`, `fuzzing.rs`, tests, `docs/reference/protocols.md`.
 
+8. A responder or plugin answers within its `timeout_ms` (under the deadline), treats
+   requests as hostile data, and records what produced an answer in its `route`.
+
 ## Build and test
 
 ```sh
@@ -80,6 +90,7 @@ cd daemon && mvn package && cd ../nucleus && cargo test -p fakenet-cli --test ca
 cd nucleus && scripts/interop.sh                            # real clients
 nucleus/scripts/test-linux-diversion.sh                     # netns diversion test
 sphinx-build -W -b html docs docs/_build/html               # docs (pip install -r docs/requirements.txt)
+python3 -m unittest discover plugins/tests                  # plugins
 ```
 
 Run the narrowest test that covers the change first; the full suite only before finishing.

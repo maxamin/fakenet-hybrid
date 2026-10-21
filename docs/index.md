@@ -39,6 +39,7 @@ usage/outputs
 usage/writing-rules
 usage/explorer
 usage/reverse-engineering
+usage/learning-and-responders
 usage/dashboard-and-health
 usage/siem
 usage/fakenet-ng-migration

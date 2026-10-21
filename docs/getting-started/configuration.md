@@ -207,3 +207,19 @@ Each hook takes the same `protocols`, `hosts` and `contains` filter keys, plus:
 | `wait_ms` | 0 | Hold the answer until the command exits, at most this long |
 | `once` | false | Fire for the first matching event only |
 | `max_dump_mb` | 512 | Largest dump written |
+
+## `[[responder]]`: learned models and plugins
+
+Answer sources tried, in order, for what the rules and the explorer leave. See
+[learned models and responders](../usage/learning-and-responders.md). Each takes the
+`protocols`, `hosts` and `contains` filter keys.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `name` | required | Logged as the route's prefix |
+| `kind` | required | `model` or `plugin` |
+| `packs` | `[]` | `model`: model packs (JSON), merged; relative to the config file |
+| `outcomes` | `successful` | `model`: leave out failures (NXDOMAIN, HTTP 4xx/5xx); `all` keeps them |
+| `command` | `[]` | `plugin`: the program and its arguments, run without a shell |
+| `timeout_ms` | 150 | `plugin`: answers later than this are dropped |
+| `rate` | 1.0 | Share of matching requests it answers |

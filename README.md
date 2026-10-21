@@ -31,6 +31,14 @@ Known bugs, risks and improvement ideas: [flaws/](flaws/README.md).
 | Small services | echo, discard, daytime, chargen, time, qotd, finger, whois |
 | Everything else | raw TCP/UDP (echo or a static reply); "auto" listeners detect any of the above on any port |
 
+Answers can also come from **models learned from real traffic**: `fakenet-nucleus --learn`
+turns pcaps (this project's captures, fuzzing or REA runs, public datasets) into a shareable
+model pack, and a `[[responder]]` answers the way real servers did, in proportion to how often
+each answer was seen. Plugins in any language (`plugins/`: Radamsa, a Markov generator, your
+own) plug into the same chain over JSON lines. See
+[learned models and responders](docs/usage/learning-and-responders.md),
+[design/](design/README.md) for the UML, and `scripts/scaffold.py` for skeletons.
+
 FakeNet-NG compatibility: its Custom Response files (static and Python providers),
 per-listener process/host white/blacklists, typed default files, and its `default.ini`
 (convert with `fakenet-nucleus --import-fakenet-ini default.ini -o fakenet.toml`).
@@ -40,7 +48,7 @@ per-listener process/host white/blacklists, typed default files, and its `defaul
 ```
 schema/fakenet-link-v1.schema.json   Event/Action message schema (shared by both sides)
 nucleus/                             Rust workspace
-  crates/schema  sniffer  link  capture  listeners  diverter  cli  explorer
+  crates/schema  sniffer  link  capture  listeners  diverter  cli  explorer  model
   crates/explorer/templates/         the explorer's response templates (default.toml)
   fuzz/                              cargo-fuzz targets for every parser (own workspace)
   examples/explorer-demo/            a harmless instrumented bot: the explorer end to end
@@ -58,6 +66,10 @@ deploy/linux/                        systemd units & installer
 deploy/windows/                      scheduled-task installer + WiX (MSI) source
 deploy/docker/                       Dockerfile (daemon + nucleus in one image)
 scripts/package.sh                   release package (.github/workflows/release.yml signs it)
+scripts/scaffold.py                  skeletons for plugins, responders, analysers, transforms
+plugins/                             responder plugins (JSON lines): template, Radamsa, Markov
+design/                              UML (Mermaid): components, answer pipeline, extension points
+.claude/skills/                      Claude Code skills: fakenet-hybrid (map), fakenet-extend
 upstream/                            reference only, git-ignored: the FakeNet-NG clone and the
                                      archived fakenet-rs source (see upstream/README.md)
 ```

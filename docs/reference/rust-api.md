@@ -86,6 +86,7 @@ Framework:
 | `manual::{ManualConfig, Manual::{new, wants, hold, pending, resolve, release_all}, Verdict, parse_verdict}` | Live manual mode |
 | `hooks::{HookConfig, HookAction, Hooks::{new, fire, paused, resume}}` | Reverse-engineering hooks (pause, dump, command) |
 | `event_filter::{EventFilter, host_of, request_text}` | The protocol/host/text filter both use |
+| `responders::{Responder, Proposal, ResponderConfig, ResponderKind, Outcomes, ModelResponder, PluginResponder, build}` | The responder chain (`[[responder]]`) |
 | `Original`, `OriginalLookup` | Real endpoints from a rewriting diverter (Windows) |
 | `dispatch::{handle_tcp, serve, serve_tunnel, terminate_tls, udp_protocol, handle_udp}` | Handler selection, TLS, tunnels |
 | `limits::{LimitsConfig, Limits::{new, admit, hold, stats}, SessionPermit, Held::grow}` | Resource limits |
@@ -154,6 +155,17 @@ Protocol modules (each `handle` serves one session; see {doc}`protocols`):
 | `coverage::{Drcov::{parse, addresses}, Module, CoverageEvent, FunctionMap::{new, function_at, functions_for, names, is_empty}, parse_hex}` | Coverage formats and address mapping |
 | `rng::Rng::{new, next_u64, below, unit, pick}` | SplitMix64 |
 
+## `model` (`model/src/`)
+
+| Item | Description |
+|---|---|
+| `pcap::{read, parse_ip, Segment, Transport}` | Classic pcap (raw, Ethernet/VLAN, Linux cooked) down to TCP/UDP segments |
+| `flows::{exchanges, Exchange}` | TCP reassembly per direction, UDP flows, request/answer pairs (bounded) |
+| `analyze::{Analyzer, analyzers, for_protocol, identify, GREETING}` | Per-protocol keys, stored answers, failures |
+| `Pack::{add, merge, load, summary}`, `ProtocolModel`, `KeyModel`, `Answer` | The model pack format |
+| `learn(paths)` | pcaps -> `Pack` |
+| `Model::{new, load, answer, answer_with, knows}`, `Sampled`, `Rng` | Weighted sampling of answers |
+
 ## `cli` (`cli/src/`)
 
 | Item | Description |
@@ -168,6 +180,7 @@ Protocol modules (each `handle` serves one session; see {doc}`protocols`):
 | `replay::replay(link, records)` | `--replay` |
 | `har::{exchanges, rules}` | `--rules-from-har` |
 | `import::convert(ini, base)` | `--import-fakenet-ini` |
+| `learn_inputs(paths)` | The pcaps `--learn` reads from files and folders |
 | `read_records(files)`, `read_records_with(files, max_payload)` | Parse event files line by line, optionally cutting payloads |
 | `diff::{capture_files, behaviour, compare, render}` | `--diff` |
 | `infer::{group_messages, analyse, dissector, infer, Transform, parse_transform, apply, decode}` | `--infer`, `--decode` |
