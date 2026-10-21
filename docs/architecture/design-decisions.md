@@ -8,7 +8,7 @@ decision with what it costs, and links the related flaws.
 | 1 | The nucleus never depends on the daemon: defaults first, a 200 ms deadline | The sample sees timely answers whatever happens to the daemon | A scripted reply slower than the deadline is lost for that request. `delay_ms` exists so deliberate slowness doesn't count |
 | 2 | One WebSocket carries all requests, correlated by `request_id` | Few sockets, a simple daemon | Correlation logic in the nucleus |
 | 3 | Per-protocol response encodings (raw HTTP, DNS text lines, raw bytes) | Groovy can write exactly what malware expects; DNS wire format in Groovy is error-prone | Each protocol has its own rule format to learn |
-| 4 | Parsed `meta` next to the raw `payload` | Rules switch on `meta.host` or `meta.qname` without parsing | Payloads travel and are stored in full (ARCH-04, PERF-03) |
+| 4 | Parsed `meta` next to the raw `payload` | Rules switch on `meta.host` or `meta.qname` without parsing | Payloads are stored twice (ARCH-04); the link cuts them past `max_payload_kb` |
 | 5 | Linux: iptables REDIRECT plus NFQUEUE marking, not NFQUEUE rewriting | The kernel does NAT robustly and fast; NFQUEUE only sees first packets | Needs the `nat` table and `nfnetlink_queue`. The block comes from a separate filter chain (`block_rules`) |
 | 6 | Synthesized `traffic.pcap` | Analysts see plaintext, TLS already decrypted | Not byte-exact; `wire.pcap` covers that |
 | 7 | Stock Camel only | Analysts use documented components; upgrades are easy | Workarounds such as the warm-up |

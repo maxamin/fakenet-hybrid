@@ -54,6 +54,7 @@ Without one, unmatched traffic is blocked (`block_undiverted`, default on); with
 | `http_url` | `http://127.0.0.1:8091/decide` | Secondary channel, used while the WebSocket is down. `""` disables it |
 | `deadline_ms` | 200 | How long a listener waits for a decision before using its default |
 | `backoff_initial_ms`, `backoff_max_ms` | 100, 10000 | WebSocket reconnect back-off. It doubles each time, plus up to 100 ms of jitter |
+| `max_payload_kb` | 1024 | Payload sent to the daemon per event. Larger ones are cut, with `meta.payload_truncated` and `meta.payload_bytes`; the capture keeps them whole |
 | `secret_file` | none | Shared secret (contents trimmed, at least 32 bytes). Authenticates the link both ways and protects `/health` details and the dashboard. Without it the link is unauthenticated and only a warning is logged |
 
 ## `[limits]`
@@ -63,7 +64,7 @@ Without one, unmatched traffic is blocked (`block_undiverted`, default on); with
 | `max_sessions` | 4096 | Concurrent TCP connections, UDP client addresses and QUIC connections. 0 = unlimited. New sessions past it are dropped; existing ones are never cut |
 | `per_source_per_second` | 0 (off) | Token-bucket rate of new sessions per source IP. At most 65,536 sources are tracked |
 | `per_source_burst` | 200 | Bucket size |
-| `memory_budget_mb` | 1024 | Shared budget for buffered payloads: HTTP bodies, SMTP DATA, FTP/TFTP uploads, Redis values, HTTP/3 bodies. It does not count the copies made for events, logging and the link (flaw PERF-03) |
+| `memory_budget_mb` | 1024 | Shared budget for buffered payloads: HTTP bodies, SMTP DATA, FTP/TFTP uploads, Redis values, HTTP/3 bodies. It counts one of the nucleus's copies of each payload (flaw PERF-03) |
 
 Refusals are counted in `/health` and on the dashboard, and logged at most once a second.
 
@@ -174,6 +175,7 @@ with `CAMEL_*` environment variables.
 | `fakenet.link.secret-file` | blank (unauthenticated) | Same file as the nucleus's `secret_file` |
 | `fakenet.link.host`, `.port` | `127.0.0.1`, 8090 | WebSocket `/link` |
 | `fakenet.audit.dir` | `audit` | Wire Tap JSONL, `events-YYYYMMDD.jsonl` |
+| `fakenet.audit.payload-bytes` | 256 | Payload bytes kept per audit record (length and SHA-256 always) |
 | `fakenet.siem.ecs-uris`, `fakenet.siem.splunk-uris`, `fakenet.siem.splunk-token`, `fakenet.siem.syslog-uris` | blank | SIEM outputs; comma-separated Camel URIs. See {doc}`../usage/siem` |
 | `fakenet.library.*` | see the rules library | Parameters of `daemon/rules-library/` routes |
 

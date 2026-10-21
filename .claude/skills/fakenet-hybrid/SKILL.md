@@ -85,7 +85,7 @@ Run the narrowest test that covers the change first; the full suite only before 
 
 ## Flaw registry
 
-`flaws/` lists 27 defects (`SEC`, `LEAK`, `BUG`, `PERF`, `DEP`, `ARCH`) plus `ENH` ideas,
+`flaws/` lists 19 defects (`SEC`, `LEAK`, `BUG`, `PERF`, `DEP`, `ARCH`) plus `ENH` ideas,
 each with `file:line`, impact and a suggested fix. Highest priority: LEAK-01, SEC-01, SEC-02
 (Windows containment), then the link's authentication (SEC-03..06).
 

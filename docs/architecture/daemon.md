@@ -13,7 +13,7 @@ relative `routes/` and `audit/` paths resolve.
 | `LinkAuth` | `load` (blank path: unauthenticated; otherwise at least 32 characters), `sign`, `verify`, and the three signed texts |
 | `EventIn` | Processor. Parses the JSON and checks the version. A hello gets the signed hello as body (`FakenetKind=hello`). Anything malformed or unsigned gets `FakenetKind=rejected` with a reason. An event gets `FakenetKind=event`, every `Fakenet*` header, and an empty body |
 | `ActionOut` | Processor. The body becomes `response` (null or empty means default; text, including Groovy GStrings, is UTF-8); `FakenetClose`, `FakenetDelayMs` (clamped to 0–60000) and `FakenetRoute` (default `"default"`) become the other fields; signs the Action |
-| `SessionState` | Bean `state`: per-actor maps with `get`, `put`, `increment`, `all`, `forget`. Actors idle for an hour are pruned, but only once 10,000 actors exist (flaw PERF-05) |
+| `SessionState` | Bean `state`: per-actor maps with `get`, `put`, `increment`, `all`, `forget`. At 10,000 actors, idle ones (an hour) are pruned, then the least recently used tenth; 1,000 keys per actor |
 | `WarmUp` | Processor. Compiles and evaluates every Groovy expression in every route on a placeholder exchange, then sends placeholder events for 20 protocols through `direct:decide` |
 | `LinkSchema` | Header names, `VERSION`, `MAX_DELAY_MS`, the shared Jackson `ObjectMapper` |
 
@@ -27,7 +27,7 @@ relative `routes/` and `audit/` paths resolve.
 | `link-websocket-decide` | `seda:link-events?concurrentConsumers=16` | `eventIn`; a hello goes back to the same connection; a rejected message is logged; an event goes to `decide-safely` and, if a reply is expected, back over the WebSocket |
 | `link-http` | `platform-http:/decide` (POST, JSON; `autoStartup: false`) | `eventIn`; anything but an event gets 401; otherwise `decide-safely`. Removes `Fakenet*` headers from the HTTP response |
 | `decide-safely` | `direct:decide-safely` | `doTry direct:decide`; on an exception the body becomes null and the route `rule-error`. Then `actionOut` and a Wire Tap to `direct:audit` |
-| `audit` | `direct:audit` | Groovy builds `{event, action}`; multicast to `file:{audit.dir}?fileName=events-YYYYMMDD.jsonl` (append), the log, and `direct:siem` |
+| `audit` | `direct:audit` | `AuditRecord.of` builds `{event, action}`, the payload cut to `fakenet.audit.payload-bytes` with its length and SHA-256; multicast to `file:{audit.dir}?fileName=events-YYYYMMDD.jsonl` (append), the log, and `direct:siem` |
 
 `decisions.yaml` (the analyst's rules; hot-reloaded): `decide` routes by protocol to
 `decide-http`, `decide-dns` and `decide-raw`, which hold the sample rules; the last route,

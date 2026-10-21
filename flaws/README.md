@@ -34,22 +34,14 @@ Medium (wrong results or risk in specific conditions), Low (edge cases, fidelity
 | [SEC-04](security.md#sec-04) | Medium | Confirmed | The link MAC leaves most fields unsigned and has no replay protection |
 | [SEC-05](security.md#sec-05) | Medium | Confirmed | The HTTP fallback channel sends signed events to whoever holds port 8091 |
 | [SEC-06](security.md#sec-06) | Medium | Confirmed | Unauthenticated link by default |
-| [PERF-01](performance-and-dos.md#perf-01) | Medium | Confirmed | Blocking file I/O under global mutexes on the async runtime |
-| [PERF-02](performance-and-dos.md#perf-02) | Medium | Confirmed | `/proc` scan per new connection (and per NFQUEUE packet) |
-| [PERF-03](performance-and-dos.md#perf-03) | Medium | Confirmed | The memory budget ignores the many copies of each payload |
-| [PERF-04](performance-and-dos.md#perf-04) | Medium | Confirmed | HTTP/2 and HTTP/3 requests on one connection are serialized |
-| [PERF-05](performance-and-dos.md#perf-05) | Medium | Confirmed | Unbounded caches keyed by sample-controlled values |
+| [PERF-03](performance-and-dos.md#perf-03) | Low | Confirmed | The memory budget counts one of the nucleus's ~4 copies of a large payload |
 | [ARCH-01](architecture.md#arch-01) | Medium | Confirmed | Windows diverter has never run in CI |
 | [ARCH-02](architecture.md#arch-02) | Medium | Confirmed | Explorer rewards scanning as "new behaviour" |
 | [BUG-16](bugs.md#bug-16) | Low | Confirmed | `nxdomain_random` flags real names with long consonant runs |
 | [SEC-09](security.md#sec-09) | Low | Confirmed | Splunk token as a `-D` property is visible to every local process |
-| [PERF-06](performance-and-dos.md#perf-06) | Low | Confirmed | YARA queue unbounded; shutdown waits for every scan |
-| [PERF-07](performance-and-dos.md#perf-07) | Low | Confirmed | Coverage watcher re-reads whole JSONL files every second |
-| [PERF-08](performance-and-dos.md#perf-08) | Low | Confirmed | One UDP client's datagrams are answered strictly one at a time |
-| [PERF-09](performance-and-dos.md#perf-09) | Low | Confirmed | Daemon audit log has no size limit |
-| [PERF-10](performance-and-dos.md#perf-10) | Low | Confirmed | Report and indicators load the whole capture into memory |
+| [PERF-08](performance-and-dos.md#perf-08) | Low | Confirmed | UdpDynamic providers start one interpreter per datagram |
 | [ARCH-03](architecture.md#arch-03) | Low | Confirmed | Schema and HMAC logic duplicated in Rust and Java |
-| [ARCH-04](architecture.md#arch-04) | Low | Confirmed | Payloads are stored twice and travel in full everywhere |
+| [ARCH-04](architecture.md#arch-04) | Low | Confirmed | Saved payloads are also in their `event` records |
 | [ARCH-05](architecture.md#arch-05) | Low | Confirmed | Live reload covers `[defaults]` only, and not on Windows |
 | [ARCH-06](architecture.md#arch-06) | Low | Confirmed | Listener filters close connections; host filters take IPs only |
 | [ARCH-07](architecture.md#arch-07) | Low | Confirmed | Process-wide global state |
@@ -60,4 +52,4 @@ Enhancement ideas (`ENH-02` to `ENH-12`) are listed in [enhancements.md](enhance
 
 1. LEAK-01, SEC-01, SEC-02: the Windows side of containment (Linux has it).
 2. SEC-04, SEC-05, SEC-06, SEC-03: the link's authentication.
-3. The PERF items, before running heavy or scanning samples.
+3. PERF-03 and PERF-08 (minor), LEAK-02, the ARCH items.

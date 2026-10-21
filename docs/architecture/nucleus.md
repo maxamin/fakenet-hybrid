@@ -52,9 +52,15 @@ Custom Response provider may be expensive; the timing guarantee is the same.
 
 ## Capture (`crates/capture`)
 
-`Capture` is shared by every session. `log` writes one JSON line and flushes it, and keeps
-the last 5,000 records in memory for the dashboard. `save_file` enforces the files budget
-and queues YARA. `tcp_flow`, `udp_datagram` and `wire_packet` write packets.
+`Capture` is shared by every session. `log`, `tcp_flow`, `udp_datagram` and `wire_packet`
+queue their record or packets (stamped when made) for one writer thread, which owns
+`events.jsonl` and the pcaps, writes in batches, flushes whenever its queue empties and
+syncs to disk about once a second. Sessions never wait on disk I/O or on each other; the
+queue (65,536 jobs) only applies back-pressure when the disk can't keep up. `flush` waits for
+everything queued; `event_files` and dropping the capture call it. `log` also keeps the last
+5,000 records in memory for the dashboard, with payloads cut to 4 KiB. `save_file` enforces
+the files budget and queues YARA (bounded, in batches); handlers call it through
+`Session::save_file`, on the blocking pool.
 Rotation: `events.jsonl` past `max_events_mb`, `traffic.pcap` and `wire.pcap` past
 `max_pcap_mb`, keeping `keep_rotations`. Details in {doc}`../usage/outputs`.
 
@@ -67,8 +73,8 @@ Rotation: `events.jsonl` past `max_events_mb`, `traffic.pcap` and `wire.pcap` pa
 | `memory_budget_mb` | Buffers that call `Held::grow` | That request fails (413, protocol error); counted |
 | Per handler | HTTP body 16 MiB (configurable), SMTP message 32 MiB, FTP upload 64 MiB, TFTP upload 32 MiB, Redis bulk 16 MiB and command 64 MiB, LDAP/SMB/MQTT messages 1 MiB, RDP PDU 64 KiB, WebSocket message 1 MiB, syslog message 64 KiB, chargen 1 MiB, line 8 KiB | The connection is closed or the transfer refused |
 
-Proxy and SOCKS tunnels and WebSocket child sessions don't take a session permit (flaw
-PERF-05).
+Proxy and SOCKS tunnels take a session permit each and nest at most 4 deep
+(`tunnel_refused`). WebSocket child sessions don't take a permit.
 
 ## Hot reload
 

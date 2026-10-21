@@ -26,6 +26,7 @@ link" group.
 | | `connectivity_check` | `host`, `path` | `http` |
 | | `custom_response`, `custom_failed` | `section`, `provider`, `error` | `http`, `raw` |
 | | `proxy_connect`, `proxy_tunnel` | `target`, `parent_session` | `http`, `dispatch` |
+| | `tunnel_refused` | `target`, `reason` (`nesting`: over 4 deep; `limits`) | `dispatch::serve_tunnel` |
 | | `doh` | `method`, `host` | `http` |
 | | `websocket_open`, `websocket_message` | `parent_session`, `path`, `host`, `protocols`; `opcode`, `message`, `message_bytes` | `websocket` |
 | DNS, NTP | `malformed` | `bytes` | `dns`, `ntp` |
@@ -52,6 +53,7 @@ link" group.
 | | `coap_request` | `method`, `path` | `coap` |
 | Runs | `sample_started`, `sample_exited`, `sample_killed`, `sample_failed` | `path`, `sha256`, `pid`, `args`, `status`, `runtime_ms`, `reason`, `error` | `run.rs` |
 | Analysis | `yara_match`, `yara_error` | `file`, `rules` / `error` | `capture::yara` |
+| | `yara_summary` | `skipped_queue_full`, `unscanned_at_stop` (only when non-zero) | `Scanner::finish` |
 | | `coverage` | `source`, `new_functions` | coverage watcher |
 
 To list the kinds actually present in a capture:

@@ -18,7 +18,11 @@ immediately, because analysis VMs are often reverted abruptly.
 | `run.json` | With `--run` |
 
 The daemon writes its own audit trail: `daemon/audit/events-YYYYMMDD.jsonl` (`{event,
-action}` per decision).
+action}` per decision). Its payloads keep `fakenet.audit.payload-bytes` bytes (default 256)
+plus `payload_bytes`, `payload_sha256` and `payload_truncated`; `events.jsonl` has them in full.
+
+`report.html` lists at most 20,000 records one by one and 1,000 values per summary
+section, with payloads cut to 1 KiB; the summaries count every record.
 
 ## `events.jsonl`
 

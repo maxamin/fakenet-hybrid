@@ -20,7 +20,7 @@ when **using** the tool.
 | `SEC` | Security | 7 |
 | `LEAK` | Network containment | 2 |
 | `BUG` | Functional bugs | 1 |
-| `PERF` | Performance and denial of service | 10 |
+| `PERF` | Performance and denial of service | 2 |
 | `DEP` | Packaging, container, CI | 0 |
 | `ARCH` | Architectural inconveniences | 7 |
 | `ENH` | Enhancement ideas | 11 |

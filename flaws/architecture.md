@@ -44,16 +44,14 @@ maintainers time.
 
 ## ARCH-04
 
-**Payloads are stored twice and sent in full everywhere** · Low · Confirmed
+**Payloads are stored twice** · Low · Confirmed
 
-- Where: `nucleus/crates/listeners/src/session.rs:136` (the Event, with payload, in
-  `events.jsonl`); `daemon/routes/link.yaml` (the audit log has the same event again);
-  the link carries the full payload.
-- What: a 16 MiB upload is base64-encoded into `events.jsonl`, sent over the WebSocket,
-  copied into daemon headers, and appended to the audit file, in addition to
-  `files/`.
-- Fix: reference large payloads by `saved` path and SHA-256 above a threshold. Let rules ask
-  for the full bytes only when they need them.
+- Where: `nucleus/crates/listeners/src/session.rs` (the Event, with payload, in
+  `events.jsonl`) and `Capture::save_file` (`files/`).
+- What: a saved upload is in `files/` and, base64-encoded, in its `event` record. (The link
+  cuts payloads past `[daemon] max_payload_kb`; the daemon's audit log keeps 256 bytes and a
+  SHA-256.)
+- Fix: above a threshold, log the event with a preview, the SHA-256 and the `saved` path.
 
 ## ARCH-05
 

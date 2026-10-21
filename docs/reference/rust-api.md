@@ -58,6 +58,7 @@ to `nucleus/crates/`. `cargo doc --workspace --no-deps --open` renders the doc c
 |---|---|
 | `Limits` | `max_events_bytes`, `max_pcap_bytes`, `max_files_bytes`, `keep` (0 = unlimited) |
 | `Capture::{open, open_with}` | Create the folder (first moving a previous run's outputs to `previous/<time>/`, `archive_previous`), open `events.jsonl` and a new `traffic.pcap` |
+| `Capture::flush` | Waits until everything queued for the writer thread is written |
 | `archive_previous(dir)`, `with_rotations(events)` | Archive a previous run; a log and its rotated siblings, oldest first |
 | `Capture::log(kind, fields)` | Append and flush one record; keep it in the 5,000-record ring |
 | `Capture::recent(after, limit)` | Ring records after a sequence number, and the latest number |
@@ -81,7 +82,7 @@ Framework:
 |---|---|
 | `Server::start(ctx, bind, listeners)`, `Server::address(name)`, `server::Listener` | Bind and run every listener; the bound addresses |
 | `Context` | Shared state: link, capture, `defaults` (`ArcSwap`), CA, timeouts, `original` lookup, explorer, limits, fingerprints |
-| `Session::{new, set_protocol, protocol, log, client_data, server_data, decide, decide_with_default, answer, notify}` | Per-connection state and the decide-or-default step (hooks, then the daemon/explorer, then live manual mode) |
+| `Session::{new, view, set_protocol, protocol, log, client_data, server_data, save_file, decide, decide_with_default, answer, notify}` | Per-connection state and the decide-or-default step (hooks, then the daemon/explorer, then live manual mode) |
 | `manual::{ManualConfig, Manual::{new, wants, hold, pending, resolve, release_all}, Verdict, parse_verdict}` | Live manual mode |
 | `hooks::{HookConfig, HookAction, Hooks::{new, fire, paused, resume}}` | Reverse-engineering hooks (pause, dump, command) |
 | `event_filter::{EventFilter, host_of, request_text}` | The protocol/host/text filter both use |
@@ -167,6 +168,6 @@ Protocol modules (each `handle` serves one session; see {doc}`protocols`):
 | `replay::replay(link, records)` | `--replay` |
 | `har::{exchanges, rules}` | `--rules-from-har` |
 | `import::convert(ini, base)` | `--import-fakenet-ini` |
-| `read_records(files)` | Parse event files |
+| `read_records(files)`, `read_records_with(files, max_payload)` | Parse event files line by line, optionally cutting payloads |
 | `diff::{capture_files, behaviour, compare, render}` | `--diff` |
 | `infer::{group_messages, analyse, dissector, infer, Transform, parse_transform, apply, decode}` | `--infer`, `--decode` |
