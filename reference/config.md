@@ -125,7 +125,7 @@ Set them with `-Dname=value` or `CAMEL_*` environment variables.
 | `camel.main.routes-reload-*` | enabled, dir `routes`, `*.yaml`, remove-all false | Hot reload, file by file |
 | `camel.server.host`/`port` | 127.0.0.1:8091 | `POST /decide` |
 | `camel.management.host`/`port` | 127.0.0.1:8092 | `/observe/health` |
-| `fakenet.link.secret-file` | blank (unauthenticated) | Same file as the nucleus |
+| `fakenet.link.secret-file` | blank (refused unless `fakenet.link.insecure=true`) | Same file as the nucleus |
 | `fakenet.link.host`/`port` | 127.0.0.1:8090 | WebSocket `/link` |
 | `fakenet.audit.dir` | `audit` | Wire Tap JSONL (`events-YYYYMMDD.jsonl`) |
 | `fakenet.siem.ecs-uris`, `fakenet.siem.splunk-uris`, `fakenet.siem.splunk-token`, `fakenet.siem.syslog-uris` | blank | SIEM outputs (comma-separated Camel URIs) |

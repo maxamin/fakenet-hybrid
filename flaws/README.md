@@ -27,10 +27,6 @@ Medium (wrong results or risk in specific conditions), Low (edge cases, fidelity
 | ID | Sev. | Status | Summary |
 |---|---|---|---|
 | [LEAK-02](network-leaks.md#leak-02) | Medium | Confirmed | `excluded_processes` matches a name the sample can choose |
-| [SEC-03](security.md#sec-03) | Medium | Confirmed | The dashboard cookie is the link's HMAC key |
-| [SEC-04](security.md#sec-04) | Medium | Confirmed | The link MAC leaves most fields unsigned and has no replay protection |
-| [SEC-05](security.md#sec-05) | Medium | Confirmed | The HTTP fallback channel sends signed events to whoever holds port 8091 |
-| [SEC-06](security.md#sec-06) | Medium | Confirmed | Unauthenticated link by default |
 | [PERF-03](performance-and-dos.md#perf-03) | Low | Confirmed | The memory budget counts one of the nucleus's ~4 copies of a large payload |
 | [ARCH-01](architecture.md#arch-01) | Medium | Confirmed | The Windows diverter, firewall block and exit guard have never run end to end |
 | [ARCH-02](architecture.md#arch-02) | Medium | Confirmed | Explorer rewards scanning as "new behaviour" |
@@ -48,5 +44,4 @@ Enhancement ideas (`ENH-04` to `ENH-12`) are listed in [enhancements.md](enhance
 ## Suggested order of work
 
 1. ARCH-01: run the Windows containment on a Windows VM.
-2. SEC-04, SEC-05, SEC-06, SEC-03: the link's authentication.
-3. PERF-03 and PERF-08 (minor), LEAK-02, the ARCH items.
+2. PERF-03 and PERF-08 (minor), LEAK-02, the ARCH items.

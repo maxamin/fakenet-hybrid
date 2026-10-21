@@ -24,7 +24,7 @@ hosts = ["c2.example"]          # optional
 contains = "/gate"              # optional
 ```
 
-Open the dashboard (`/dashboard?token=<secret>`). Each held request shows the client, its
+Open the dashboard (`/dashboard`, then log in with the link secret). Each held request shows the client, its
 process, the request line, the payload (control bytes escaped) and the **proposed** answer:
 the daemon rule's, the explorer's, or the handler's built-in default (shown for HTTP and raw;
 for other protocols the handler's default is used without being shown). Then:

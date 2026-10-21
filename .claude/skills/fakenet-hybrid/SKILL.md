@@ -63,7 +63,8 @@ not ast-grep). So:
 3. Sample data is hostile: bound every read, escape every render, never interpolate it into
    code (Groovy/YAML/HTML/CSV).
 4. Link changes go to Rust **and** Java together, with the shared HMAC test vectors
-   (`signatures_match_the_shared_vectors`, `LinkAuthTest`) and the JSON Schema.
+   (`signatures_match_the_shared_vectors`, `LinkAuthTest`; messages are sealed whole, `auth`
+   last) and the JSON Schema.
 5. Diversion is off by default; nothing turns it on implicitly.
 6. Stock Camel components only.
 7. A new protocol touches: `schema::Protocol`, JSON Schema enum, sniffer tables,
@@ -85,9 +86,9 @@ Run the narrowest test that covers the change first; the full suite only before 
 
 ## Flaw registry
 
-`flaws/` lists 16 defects (`SEC`, `LEAK`, `BUG`, `PERF`, `DEP`, `ARCH`) plus `ENH` ideas,
-each with `file:line`, impact and a suggested fix. Highest priority: the link's authentication
-(SEC-03..06); ARCH-01 (run the Windows containment on Windows).
+`flaws/` lists 12 defects (`SEC`, `LEAK`, `BUG`, `PERF`, `DEP`, `ARCH`) plus `ENH` ideas,
+each with `file:line`, impact and a suggested fix. Highest priority: ARCH-01 (run the Windows
+containment on Windows).
 
 - Before changing an area, `rg -n 'path/to/file.rs' flaws` to see known issues there.
 - After fixing one: delete its section, its index row in `flaws/README.md`, adjust the

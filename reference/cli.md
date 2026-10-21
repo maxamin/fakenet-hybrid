@@ -22,8 +22,8 @@ Modes are checked in this order. The first one that matches runs and the program
 1. Load the config. With `--run`, set the capture dir to
    `<capture_dir>/<YYYYMMDD-HHMMSS>-<name>-<sha12>`. If the explorer has no samples,
    add the sample to it.
-2. `config.secret()`. With no secret file, a warning is logged and the link is
-   unauthenticated.
+2. `config.secret()`. With no secret file and a daemon URL set, start-up stops unless
+   `--insecure-link`.
 3. `Capture::open_with`, then the optional `WireCapture::start`, then optional YARA
    (`enable_yara`).
 4. `TlsAuthority::generate()` creates a fresh CA for each run and writes it to
@@ -62,7 +62,7 @@ non-zero.
 | `generate_secret(path)` | See the flags table |
 | `Control` | State for the control server |
 | `serve_control(listener, control)` | HTTP/1.1 accept loop |
-| `authorized(control, req)` | Bearer token or `fakenet_token` cookie, compared in constant time. Always true when there is no secret |
+| `authorized(control, req)` | The secret as a bearer token (constant time), or a valid `fakenet_session` cookie (`Sessions`). Always true when there is no secret |
 | `control_response` | The routes below |
 | `constant_time_eq`, `query_param` | Helpers (no URL decoding) |
 
@@ -71,7 +71,7 @@ non-zero.
 | Route | Without auth | With auth |
 |---|---|---|
 | `GET /health` | `{"status":"ok"}` | Adds `daemon` (link health), `listeners`, `limits` |
-| `GET /dashboard?token=SECRET` | | 303 to `/dashboard` with the cookie `fakenet_token=<secret>; HttpOnly; SameSite=Strict; Path=/` |
+| `POST /dashboard/login` | | Form field `token` = the secret: 303 to `/dashboard` with `fakenet_session=<random token>; HttpOnly; SameSite=Strict; Path=/` |
 | `GET /dashboard` | 401 with a hint | The page (`dashboard/index.html`) |
 | `GET /dashboard.js`, `/dashboard.css` | Always served | |
 | `GET /api/records?after=N&limit=L` | 401 | Up to 5000 recent records (in-memory ring) with sequence numbers |

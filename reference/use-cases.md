@@ -34,7 +34,7 @@
    installs iptables, starts the listeners, the link and the control server on
    `127.0.0.1:8099`.
 6. Install `capture/ca.pem` as a trusted root in the VM, then run the sample.
-7. Watch `http://127.0.0.1:8099/dashboard?token=<secret>`.
+7. Watch `http://127.0.0.1:8099/dashboard` (log in with the secret).
 8. Ctrl+C removes iptables, finishes the YARA scans, and writes `report.html` and
    `indicators.*`.
 

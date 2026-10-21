@@ -6,17 +6,21 @@ loopback enforced). Source: `serve_control` and `control_response` in
 
 ## Authentication
 
-When `[daemon] secret_file` is set, everything beyond a bare "ok" needs the secret,
-either as `Authorization: Bearer <secret>` or as the `fakenet_token` cookie, compared in
-constant time. Without a secret, everything is open.
+When `[daemon] secret_file` is set, everything beyond a bare "ok" needs either the secret
+as `Authorization: Bearer <secret>` (scripts; compared in constant time) or a dashboard
+session cookie. Open `/dashboard`, enter the secret in the login form, and the nucleus sets
+`fakenet_session=<random 256-bit token>; HttpOnly; SameSite=Strict; Path=/`. The secret
+itself is never put in a URL or a cookie. Sessions last 12 hours (64 at most, in memory);
+**Log out** ends one. Without a secret (`--insecure-link`), everything is open.
 
 ## Routes
 
 | Route | Without the secret | With it |
 |---|---|---|
 | `GET /health` | `{"status":"ok"}` | Also `daemon` (link health), `listeners`, `limits` |
-| `GET /dashboard?token=SECRET` | | 303 to `/dashboard`, setting `fakenet_token=<secret>; HttpOnly; SameSite=Strict; Path=/` |
-| `GET /dashboard` | 401 with a hint | The page |
+| `GET /dashboard` | 401 with the login form (a `?token=` in the URL is refused) | The page |
+| `POST /dashboard/login` | Form field `token` = the secret: 303 to `/dashboard` with a session cookie; else 401 | |
+| `POST /dashboard/logout` | Ends the session, clears the cookie | |
 | `GET /dashboard.js`, `/dashboard.css` | Served | Served |
 | `GET /api/records?after=N&limit=L` | 401 | Up to `L` (default 1000, at most 5000) records newer than sequence `N`, from a 5,000-record ring in memory, plus the latest sequence number |
 | `GET /api/summary` | 401 | Link health, listeners, limits, and an explorer summary (top 8 templates by reward) |
@@ -25,15 +29,16 @@ constant time. Without a secret, everything is open.
 | `GET /api/paused` | 401 | Processes paused by hooks |
 | `POST /api/paused/<pid>/resume` | 401 | Resume (SIGCONT) a process a hook paused |
 
-POSTs must be `application/json`, which a cross-site form can't send, on top of the
-`SameSite=Strict` cookie. Bodies are limited to 16 MiB.
+POSTs to `/api/` must be `application/json`, which a cross-site form can't send, on top of the
+`SameSite=Strict` cookie. Bodies are limited to 16 MiB (4 KiB for the login).
 
 Every response carries a strict CSP (`default-src 'none'; script-src 'self'; ...`),
 `nosniff`, `no-store` and `no-referrer`.
 
-```{warning}
-The cookie value is the link secret itself, and the token travels in the URL once (flaw
-SEC-03). Close the browser and clear its data before running samples in the same VM.
+```{note}
+The session cookie lets a sample that reads the browser's cookie store use the dashboard
+API (as the analyst could) until the session ends, but not the link. Log out, or close the
+browser, before running samples in the same VM.
 ```
 
 ### Link health fields

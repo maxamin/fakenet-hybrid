@@ -82,7 +82,7 @@ curl -s http://example.com/ | head -3          # answered by the nucleus
 dig +short anything.example                    # 10.0.0.5
 ```
 
-Open `http://127.0.0.1:8099/dashboard?token=<contents of link.secret>` for the live view.
+Open `http://127.0.0.1:8099/dashboard` and log in with the contents of `link.secret` for the live view.
 
 ## 7. Run the sample, then stop
 

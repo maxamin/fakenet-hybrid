@@ -38,40 +38,44 @@ fields.
 | `route` | string | Label for logs |
 | `auth` | hex string | HMAC |
 
-## Hello (WebSocket handshake)
+## Hello (handshake)
 
-`{"version": 1, "type": "hello", "nonce": "<32 hex chars>", "auth": "<hmac>"}`. The nucleus
-sends it without `auth`; the daemon returns it signed. The nucleus waits at most 3 s and
-sends nothing else on the connection until the signature checks out.
+`{"version": 2, "type": "hello", "nonce": "<32 hex chars>", "auth": "<hmac>"}`. The nucleus
+sends it without `auth`; the daemon returns it signed. On the WebSocket the nucleus waits at
+most 3 s and sends nothing else on the connection until the signature checks out. On the
+HTTP channel it POSTs a fresh hello to `/decide` before each event, and sends the event only
+if the reply is signed.
 
 ## Authentication
 
-Each signature is lowercase hex HMAC-SHA256, keyed with the secret file's trimmed contents,
-over:
+Signatures are lowercase hex HMAC-SHA256, keyed with the secret file's trimmed contents.
 
-```text
-hello:  "fakenet-link-v1 hello\n{nonce}"
-event:  "fakenet-link-v1 event\n{request_id}\n{session_id}\n{payload base64}"
-action: "fakenet-link-v1 action\n{request_id}\n{session_id}\n{response base64 or -}\n{close}\n{delay_ms or -}"
-```
+- **Events and actions are sealed whole.** The sender serialises the message without
+  `auth`, computes the MAC over `"fakenet-link-v2\n"` followed by that exact JSON text, and
+  appends `,"auth":"<mac>"` as the last member. The receiver strips that suffix and checks
+  the MAC over the text before it. Every field is covered (`protocol`, `meta`, `src`, `dst`,
+  `process`, `expects_reply`, `route`...), and neither side has to reproduce the other's JSON
+  formatting (`auth::seal` / `auth::unseal`, `LinkAuth.seal` / `LinkAuth.unseal`).
+- **Hello:** the MAC over `"fakenet-link-v2 hello\n{nonce}"`.
 
-Both sides check the same test vectors (`signatures_match_the_shared_vectors` in Rust,
-`LinkAuthTest` in Java). Verification is constant-time on both sides (`ring::hmac::verify`,
-`MessageDigest.isEqual`).
+Both sides check the same test vectors, computed independently (`signatures_match_the_shared_vectors`
+in Rust, `LinkAuthTest` in Java). Verification is constant-time on both sides
+(`ring::hmac::verify`, `MessageDigest.isEqual`).
 
 What it guarantees:
 
-- the WebSocket peer holds the secret (handshake) before any event is sent on it;
-- the daemon drops unsigned or forged events (`rejected`; HTTP returns 401);
-- the nucleus ignores unsigned or forged actions (`invalid` fallback).
+- the peer holds the secret before any event is sent to it (WebSocket handshake per
+  connection, HTTP hello per event), so a process that takes a port while the daemon is
+  down receives nothing;
+- the daemon drops events that are unsigned, altered in any field, more than 5 minutes off
+  in `timestamp`, or carry a `request_id` it has seen (`rejected`; HTTP returns 401);
+- the nucleus ignores unsigned or altered actions (`invalid` fallback), and only accepts one
+  for a request it is waiting on;
+- neither side starts a link without a secret unless told to (`--insecure-link`,
+  `fakenet.link.insecure=true`).
 
-What it doesn't:
-
-- fields outside the signed texts (`protocol`, `meta`, `src`, `dst`, `process`,
-  `expects_reply`, `route`) can be altered, and messages can be replayed (flaw SEC-04);
-- the HTTP channel has no handshake: whoever holds port 8091 receives the events
-  (flaw SEC-05);
-- anyone who can read the secret file can do anything.
+What it doesn't: anyone who can read the secret file can do anything (it is readable by
+SYSTEM/Administrators or root and the `fakenet` group only).
 
 ## Transport details
 

@@ -16,7 +16,7 @@ decision with what it costs, and links the related flaws.
 | 9 | Two route files, reloaded separately | Saving rules never drops the WebSocket | A rule file can't redefine link route IDs |
 | 10 | Warm up, then open the channels | Groovy's first compile can take seconds | Scripts run once on placeholder data; `WarmUpTest` keeps the protocol list equal to the schema |
 | 11 | An empty body means "default" | Rules describe only what's interesting; a failing rule degrades to the default | None significant |
-| 12 | The link is authenticated with a shared secret | Malware on loopback can't impersonate either side | Partial coverage (SEC-04), the HTTP channel (SEC-05), the secret reused as a cookie (SEC-03) |
+| 12 | The link is authenticated with a shared secret, required by default | Malware on loopback can't impersonate either side, read events, or replay them | Whole messages sealed, the HTTP channel challenged per event, replays refused; anyone who can read the secret file can do anything |
 | 16 | Live manual mode and hooks may hold a client past the deadline | Reverse engineering needs the analyst (or a debugger) in the loop | Opt-in and filtered; held requests time out to the proposed answer |
 | 13 | The CA is saved once (`ca_cert`/`ca_key`) and reused | The VM trusts it across restarts and snapshots | Its private key sits on disk (mode 0600); without the two keys, a fresh CA per start |
 | 14 | SMB, LDAP, RDP and VNC capture credentials, then fail the logon | A fake server can't derive real session keys; worms then try their next credential, which is captured too | No post-logon behaviour is observed |

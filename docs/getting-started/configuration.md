@@ -55,7 +55,7 @@ Without one, unmatched traffic is blocked (`block_undiverted`, default on); with
 | `deadline_ms` | 200 | How long a listener waits for a decision before using its default |
 | `backoff_initial_ms`, `backoff_max_ms` | 100, 10000 | WebSocket reconnect back-off. It doubles each time, plus up to 100 ms of jitter |
 | `max_payload_kb` | 1024 | Payload sent to the daemon per event. Larger ones are cut, with `meta.payload_truncated` and `meta.payload_bytes`; the capture keeps them whole |
-| `secret_file` | none | Shared secret (contents trimmed, at least 32 bytes). Authenticates the link both ways and protects `/health` details and the dashboard. Without it the link is unauthenticated and only a warning is logged |
+| `secret_file` | none | Shared secret (contents trimmed, at least 32 bytes). Authenticates the link both ways and protects `/health` details and the dashboard. Required when a daemon URL is set: without it the nucleus refuses to start, unless `--insecure-link`. Create one with `fakenet-nucleus --generate-secret PATH` |
 
 ## `[limits]`
 
@@ -174,7 +174,8 @@ with `CAMEL_*` environment variables.
 | `camel.main.routes-reload-*` | enabled, dir `routes`, `*.yaml`, remove-all false | Hot reload, file by file |
 | `camel.server.host`, `.port` | `127.0.0.1`, 8091 | `POST /decide` |
 | `camel.management.host`, `.port` | `127.0.0.1`, 8092 | `/observe/health` |
-| `fakenet.link.secret-file` | blank (unauthenticated) | Same file as the nucleus's `secret_file` |
+| `fakenet.link.secret-file` | blank | Same file as the nucleus's `secret_file`. Blank: the daemon refuses to start unless `fakenet.link.insecure=true` |
+| `fakenet.link.insecure` | false | Run the link without a secret |
 | `fakenet.link.host`, `.port` | `127.0.0.1`, 8090 | WebSocket `/link` |
 | `fakenet.audit.dir` | `audit` | Wire Tap JSONL, `events-YYYYMMDD.jsonl` |
 | `fakenet.audit.payload-bytes` | 256 | Payload bytes kept per audit record (length and SHA-256 always) |

@@ -31,7 +31,8 @@ Logging uses `RUST_LOG` (`tracing-subscriber` env filter; default `info`), for e
 | `--run SAMPLE` | | Analyse one sample in a capture folder of its own (below) |
 | `--timeout SECS` | 120 | `--run` only: kill the sample and end the run after this long |
 | `--sample-arg ARG` | | `--run` only: an argument for the sample; repeat for several |
-| `--generate-secret PATH` | | Write 32 random bytes as 64 hex characters plus a newline. Fails if the file exists. Mode 0600 on Unix |
+| `--generate-secret PATH` | | Write 32 random bytes as 64 hex characters plus a newline, and print the two settings that use it. Fails if the file exists. Mode 0600 on Unix |
+| `--insecure-link` | | Allow a daemon link without `secret_file` (otherwise start-up stops). Any local process could then read events or pose as the daemon |
 | `--restore-network` | | Remove what a run left: Linux, the `FAKENET` iptables/ip6tables chains (with `--keep-block`, only the diversion); Windows, the firewall block, restoring the firewall and forwarding state it changed |
 | `--run-as USER` | | `--run` only. Unix: the account the sample runs as (required when the nucleus runs as root; `root` keeps root). Windows: `restricted` (default: Administrators deny-only, no privileges, medium integrity) or `administrator` |
 | `--report EVENTS` | | Render an HTML report from one `events.jsonl` (to `-o`, default `report.html`). Includes `explorer-map.json` from the same folder if present. Also reads its rotated siblings (`events.N.jsonl`), as does `--indicators` |
@@ -54,7 +55,7 @@ Start-up (`main`):
 1. Load the config (`Config::load`: parse, resolve relative paths, validate). With `--run`,
    append `<YYYYMMDD-HHMMSS>-<name>-<sha256[:12]>` to `capture_dir`, and add the sample to
    `[explorer] samples` if that list is empty.
-2. Read the secret. Without one, log a warning: the link is unauthenticated.
+2. Read the secret. Without one, stop unless `--insecure-link` (or no daemon URL is set).
 3. Open the capture (`Capture::open_with`), start the optional wire capture and YARA.
 4. Load the TLS CA from `ca_cert`/`ca_key` (creating and saving it on first use) or generate one, and write `capture/ca.pem`; open `tls-keys.log` if enabled.
 5. Start the diverter (if enabled). From here, dropping it restores the network.

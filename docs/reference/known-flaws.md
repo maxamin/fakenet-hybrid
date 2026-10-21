@@ -9,13 +9,12 @@ when **using** the tool.
 | ID | What to know | Workaround |
 |---|---|---|
 | LEAK-02 | `excluded_processes` trusts a name the sample can choose | Keep the list empty during runs |
-| SEC-03 | The dashboard cookie is the link secret | Clear the browser before running samples |
 
 ## Categories
 
 | Prefix | Category | Count |
 |---|---|---|
-| `SEC` | Security | 5 |
+| `SEC` | Security | 1 |
 | `LEAK` | Network containment | 1 |
 | `BUG` | Functional bugs | 1 |
 | `PERF` | Performance and denial of service | 2 |

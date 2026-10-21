@@ -68,7 +68,7 @@ upstream/                            reference only, git-ignored: the FakeNet-NG
 | `http://127.0.0.1:8091/decide` | daemon | Secondary channel (one POST per Event) |
 | `http://127.0.0.1:8092/observe/health` | daemon | Camel health |
 | `http://127.0.0.1:8099/health` | nucleus | Nucleus health, link state, fallback counters |
-| `http://127.0.0.1:8099/dashboard` | nucleus | Live dashboard (open `/dashboard?token=<link secret>` once) |
+| `http://127.0.0.1:8099/dashboard` | nucleus | Live dashboard (log in with the link secret) |
 
 ## Requirements
 
@@ -210,8 +210,8 @@ not saved, so existing evidence is never deleted.
 
 ### Live dashboard
 
-`http://127.0.0.1:8099/dashboard?token=<contents of link.secret>` sets an HttpOnly cookie
-and opens a live view: sessions, DNS names, URLs, credentials, files, fallbacks, daemon
+`http://127.0.0.1:8099/dashboard` asks for the link secret once (a login form; the cookie
+holds a random session token, not the secret) and opens a live view: sessions, DNS names, URLs, credentials, files, fallbacks, daemon
 state and, when it's on, the explorer's progress. It's served on the health address
 (loopback only) and needs the secret, like `/health`'s details.
 

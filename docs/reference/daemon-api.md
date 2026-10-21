@@ -29,7 +29,7 @@ Every call refreshes the actor's idle timer (1 hour).
 
 | Method | Description |
 |---|---|
-| `static load(path)` | Blank path: unauthenticated. Otherwise reads, trims, requires 32+ characters |
+| `static load(path)` | Blank path: unauthenticated (the daemon then refuses to start unless `fakenet.link.insecure=true`). Otherwise reads, trims, requires 32+ characters |
 | `enabled()` | Whether a secret is loaded |
 | `sign(text)` | Hex HMAC-SHA256, or `null` without a secret |
 | `verify(text, signature)` | `true` without a secret; otherwise a constant-time comparison |

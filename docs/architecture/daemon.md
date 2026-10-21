@@ -10,7 +10,7 @@ relative `routes/` and `audit/` paths resolve.
 |---|---|
 | `FakenetDaemon` | Entry point: a `Main` with `DaemonConfiguration` |
 | `DaemonConfiguration` | Loads `LinkAuth` from `fakenet.link.secret-file` and binds the beans `eventIn`, `actionOut`, `warmUp` and `state` |
-| `LinkAuth` | `load` (blank path: unauthenticated; otherwise at least 32 characters), `sign`, `verify`, and the three signed texts |
+| `LinkAuth` | `load` (blank path: unauthenticated, which `DaemonConfiguration` refuses unless `fakenet.link.insecure=true`; otherwise at least 32 characters), `sign`, `verify`, `helloText`, `seal`, `unseal`. `EventIn` also refuses stale timestamps (±5 min) and seen `request_id`s (100,000 kept) |
 | `EventIn` | Processor. Parses the JSON and checks the version. A hello gets the signed hello as body (`FakenetKind=hello`). Anything malformed or unsigned gets `FakenetKind=rejected` with a reason. An event gets `FakenetKind=event`, every `Fakenet*` header, and an empty body |
 | `ActionOut` | Processor. The body becomes `response` (null or empty means default; text, including Groovy GStrings, is UTF-8); `FakenetClose`, `FakenetDelayMs` (clamped to 0–60000) and `FakenetRoute` (default `"default"`) become the other fields; signs the Action |
 | `SessionState` | Bean `state`: per-actor maps with `get`, `put`, `increment`, `all`, `forget`. At 10,000 actors, idle ones (an hour) are pruned, then the least recently used tenth; 1,000 keys per actor |

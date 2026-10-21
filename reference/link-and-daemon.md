@@ -49,18 +49,13 @@ Rust items:
 ### Authentication (`schema::auth`, `daemon/.../LinkAuth.java`)
 
 Each signature is lowercase hex HMAC-SHA256, keyed with the secret file's trimmed
-contents, over one of these texts:
+contents. Events and actions are sealed whole: `auth::seal` appends `"auth"` last, the MAC
+of `"fakenet-link-v2\n"` plus the JSON text before it; `auth::unseal` checks it. The hello
+MAC covers `"fakenet-link-v2 hello\n{nonce}"`.
 
-```
-hello:  "fakenet-link-v1 hello\n{nonce}"
-event:  "fakenet-link-v1 event\n{request_id}\n{session_id}\n{payload base64}"
-action: "fakenet-link-v1 action\n{request_id}\n{session_id}\n{response b64 or -}\n{close}\n{delay_ms or -}"
-```
-
-`Secret::sign`, `Secret::verify` (constant-time through `ring`), `random_hex`. Both
-sides share test vectors (`signatures_match_the_shared_vectors` and `LinkAuthTest`).
-The MAC does not cover `protocol`, `src`, `dst`, `process`, `meta`, `expects_reply` or
-`route` (flaw `SEC-05`).
+`Secret::sign`, `Secret::verify` (constant-time through `ring`), `random_hex`, `seal`,
+`unseal`. Both sides share test vectors (`signatures_match_the_shared_vectors` and
+`LinkAuthTest`).
 
 ## The `link` crate (`nucleus/crates/link/src/lib.rs`)
 
@@ -81,7 +76,7 @@ The MAC does not cover `protocol`, `src`, `dst`, `process`, `meta`, `expects_rep
 |---|---|
 | `FakenetDaemon` | `camel-main` entry point. Adds `DaemonConfiguration` |
 | `DaemonConfiguration` | Loads `LinkAuth` from `fakenet.link.secret-file` and binds the beans `eventIn`, `actionOut`, `warmUp`, `state` |
-| `LinkAuth` | `load` (blank path = unauthenticated, otherwise at least 32 chars), `sign`, `verify` (`MessageDigest.isEqual`), `helloText`/`eventText`/`actionText` |
+| `LinkAuth` | `load` (blank path = unauthenticated, otherwise at least 32 chars), `sign`, `verify` (`MessageDigest.isEqual`), `helloText`, `seal`, `unseal` |
 | `EventIn` (processor) | Parse JSON and check the version. A hello gets the signed hello as its body (`FakenetKind=hello`). Anything else malformed or unsigned gets `rejected`. An event gets `FakenetKind=event` with every `Fakenet*` header set and an empty body. `FakenetActor` = `pid:N` when the process is known, otherwise `ip:ADDR` |
 | `ActionOut` (processor) | Body to `response`. Null or empty means the default. Text, including Groovy GStrings, is UTF-8. Clamps `FakenetDelayMs` to 0–60000, reads `FakenetClose` and `FakenetRoute` (default `"default"`), signs |
 | `SessionState` (bean `state`) | Per-actor `Map` with `get`, `get(default)`, `put`, `increment`, `all`, `forget`. Idle actors expire after 1 h. Pruning happens only when there are at least 10k actors (flaw `DOS-07`) |
