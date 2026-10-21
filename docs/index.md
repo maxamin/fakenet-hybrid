@@ -38,6 +38,7 @@ usage/cli
 usage/outputs
 usage/writing-rules
 usage/explorer
+usage/reverse-engineering
 usage/dashboard-and-health
 usage/siem
 usage/fakenet-ng-migration

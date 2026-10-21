@@ -4,7 +4,7 @@
 
 | Script | Usage | What it does |
 |---|---|---|
-| `scripts/package.sh` | `scripts/package.sh` | Builds the nucleus (release) and the daemon (`mvn package`, tests included), then stages `bin/`, `daemon/{jar,lib,routes}`, `config/{fakenet.toml,default-files}`, `deploy schema docs README.md` into `dist/fakenet-hybrid-<ver>-<host-triple>.tar.gz` plus a `.sha256`. **`config/fingerprints/` is not included** (flaw `DEP-03`) |
+| `scripts/package.sh` | `scripts/package.sh` | Builds the nucleus (release) and the daemon (`mvn package`, tests included), then stages `bin/`, `daemon/{jar,lib,routes}`, `config/{fakenet.toml,default-files,fingerprints,hooks}`, `deploy schema docs README.md` into `dist/fakenet-hybrid-<ver>-<host-triple>.tar.gz` plus a `.sha256`. |
 | `nucleus/scripts/interop.sh` | `cargo build && scripts/interop.sh [binary]` (`KEEP_OUTPUT=1`) | Runs the nucleus on 127.0.0.1 high ports with no daemon and no diversion, then makes 42+ checks with curl, dig, ssh, redis-cli, swaks, logger, nc, python (`interop-iot.py`), smbclient, ldapsearch, FreeRDP and john. Missing tools are skipped. `check`, `need` and `event` are its helpers |
 | `nucleus/scripts/interop-iot.py` | `interop-iot.py mqtt\|coap\|websocket PORT` | Stdlib-only clients: an MQTT CONNECT that waits for CONNACK, a CoAP GET of `/.well-known/core`, a WebSocket upgrade with an echo frame |
 | `nucleus/scripts/rea-hints.sh` | `rea-hints.sh SAMPLE OUT.jsonl [ghidra\|ida\|…]` | Runs REA (`rea`, or `npx -y rea-agents@6.5.0`): search procedures, search strings, analyze. The output is JSONL for `[explorer] rea` |
@@ -20,7 +20,7 @@
 | `deploy/linux/install.sh` (root) | Installs to `/opt/fakenet-hybrid`. Creates the `fakenet` system user and `/var/lib/fakenet/audit`. Writes `/etc/fakenet/fakenet.toml` from the sample config, rewriting `capture_dir`, `default-files` and `secret_file` with sed. Generates `/etc/fakenet/link.secret` with mode 0640 `root:fakenet`. Installs both units. Never enables them or diversion |
 | `deploy/linux/fakenet-daemon.service` | `User=fakenet`, `WorkingDirectory=/opt/fakenet-hybrid/daemon`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `NoNewPrivileges`. The only writable paths are audit and routes |
 | `deploy/linux/fakenet-nucleus.service` | Runs as root. `ExecStopPost=--restore-network`, `KillSignal=SIGINT`, `Restart=on-failure` |
-| `deploy/docker/Dockerfile` | Three stages: the nucleus (`rust:1.83`, flaw `DEP-01`), the daemon (maven, temurin 21), and the runtime (`eclipse-temurin:21-jre-noble`, user `fakenet` uid 10001). Copies `routes/`, `default-files`, the container config and the entrypoint. `HEALTHCHECK` uses `/dev/tcp` under `/bin/sh` (flaw `DEP-02`) |
+| `deploy/docker/Dockerfile` | Three stages: the nucleus (`rust:1.89`), the daemon (maven, temurin 21), and the runtime (`eclipse-temurin:21-jre-noble`, user `fakenet` uid 10001). Copies `routes/`, `default-files`, the container config and the entrypoint. `HEALTHCHECK` uses bash's `/dev/tcp` |
 | `deploy/docker/entrypoint.sh` | Generates the secret, starts the daemon in the background, waits up to 60 s for `:8092/observe/health` (using `/dev/tcp`), then `exec`s the nucleus |
 | `deploy/docker/fakenet.container.toml` | The sample config with `secret_file = "/opt/fakenet/link.secret"` and diversion off |
 | `deploy/windows/install.ps1` (Administrator) | Copies the zip layout to `C:\FakeNetHybrid`, then calls `register-tasks.ps1` |

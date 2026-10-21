@@ -33,11 +33,17 @@ Logging uses `RUST_LOG` (`tracing-subscriber` env filter; default `info`), for e
 | `--sample-arg ARG` | | `--run` only: an argument for the sample; repeat for several |
 | `--generate-secret PATH` | | Write 32 random bytes as 64 hex characters plus a newline. Fails if the file exists. Mode 0600 on Unix |
 | `--restore-network` | | Linux: remove the `FAKENET` iptables/ip6tables chains a killed run left. Windows: nothing to do |
-| `--report EVENTS` | | Render an HTML report from one `events.jsonl` (to `-o`, default `report.html`). Includes `explorer-map.json` from the same folder if present. Reads only the file given (flaw BUG-13) |
+| `--report EVENTS` | | Render an HTML report from one `events.jsonl` (to `-o`, default `report.html`). Includes `explorer-map.json` from the same folder if present. Also reads its rotated siblings (`events.N.jsonl`), as does `--indicators` |
 | `--indicators EVENTS` | | Write `indicators.csv`, `indicators.stix.json` and `indicators.misp.json` to `-o DIR` (default: the events file's folder). Uses `DIR/run.json` for the sample if present |
 | `--import-fakenet-ini INI` | | Convert a FakeNet-NG (or fakenet-rs) `default.ini` to TOML (to `-o`, default stdout) |
 | `--rules-from-har HAR` | | Generate a Camel route replaying a HAR recording (to `-o`, default stdout) |
 | `--replay EVENTS` | | Send a capture's events to the running daemon (using `-c`'s `[daemon]` section and secret) and print each decision |
+| `--diff A B` | | Compare two runs (capture folders or `events.jsonl` files): destinations, DNS names, HTTP requests, commands, raw messages, credentials, TLS/SSH clients, saved files and detections only one run has, plus record counts. JSON to `-o` if given. See [reverse engineering](reverse-engineering.md) |
+| `--infer EVENTS` | | Per destination, the structure of unparsed (`raw`) client messages: magic, constant bytes, length field, per-session counter, encodings, single-byte XOR key. With `-o DIR`, a Wireshark Lua dissector per destination |
+| `--decode EVENTS` | | Run client payloads through `--transform` steps into `-o DIR` (default `decoded/` next to the events), with `index.json` |
+| `--transform STEP` | | `--decode` step, applied in order: `base64`, `hex`, `xor:KEY`, `rc4:KEY` (KEY as hex, or `text:...`), `skip:N` |
+| `--only TEXT` | | `--decode`: only destinations containing TEXT (e.g. `:4444`) |
+| `--all-protocols` | | `--infer`, `--decode`: every protocol, not only `raw` |
 | `-o, --output PATH` | | Output for the modes above |
 
 ## Normal run: start-up and shutdown
@@ -49,7 +55,7 @@ Start-up (`main`):
    `[explorer] samples` if that list is empty.
 2. Read the secret. Without one, log a warning: the link is unauthenticated.
 3. Open the capture (`Capture::open_with`), start the optional wire capture and YARA.
-4. Generate the TLS CA and write `capture/ca.pem`; open `tls-keys.log` if enabled.
+4. Load the TLS CA from `ca_cert`/`ca_key` (creating and saving it on first use) or generate one, and write `capture/ca.pem`; open `tls-keys.log` if enabled.
 5. Start the diverter (if enabled). From here, dropping it restores the network.
 6. Load the explorer (if enabled).
 7. Start the link, the limits, the shared `Context`, then bind every listener
@@ -63,7 +69,7 @@ Shutdown: stop the control server, drop the listeners, stop the diverter, stop t
 background tasks, write the final `explorer-map.json`, wait for YARA scans, log
 `nucleus_stopped`, write `report.html`, write `run.json` (`--run`), write the indicators.
 
-If removing the diversion fails, the steps after it are skipped (flaw BUG-02).
+If removing the diversion fails, the outputs are still written and the exit status is non-zero.
 
 ## `--run`: one sample per capture folder
 
@@ -87,7 +93,7 @@ sudo fakenet-nucleus -c my.toml --run ./sample.exe --timeout 300 --sample-arg -q
 ```{warning}
 `--run` executes the sample with the nucleus's privileges (root or Administrator), and only
 the direct child is killed. Descendants survive the run, and then the diversion is gone.
-Read flaws SEC-01, SEC-02 and LEAK-01 before relying on it; revert the VM after each run.
+On Windows read flaws SEC-01, SEC-02 and LEAK-01 before relying on it; revert the VM after each run.
 ```
 
 ## `--replay`: test rules without traffic
@@ -123,7 +129,7 @@ fakenet-nucleus --rules-from-har c2.har -o daemon/routes/recorded.yaml
 - To use it, add `- to: direct:decide-recorded` to `decide-http`. Requests it doesn't know
   keep whatever the other rules set.
 
-See flaw SEC-08 about untrusted HAR files.
+Keys are written as single-quoted Groovy strings with control characters escaped (`\uXXXX`), so HAR text can't end them.
 
 ## `--import-fakenet-ini`
 

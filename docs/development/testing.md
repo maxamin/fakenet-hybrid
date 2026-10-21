@@ -39,5 +39,5 @@
 ## Not covered by any test
 
 - The WinDivert diverter (ARCH-01).
-- TFTP under Linux diversion (BUG-11).
-- Installing from the release packages and the Docker image (DEP-01 to DEP-03).
+- TFTP under Linux diversion: transfers are sent from the original destination with `IP_TRANSPARENT` (needs root); not covered by `linux_diversion.rs`.
+- Installing from the release packages and the Docker image (CI builds them; nothing starts them).

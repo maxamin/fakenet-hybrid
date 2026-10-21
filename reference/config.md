@@ -26,12 +26,13 @@ the config file's directory (`Config::resolve_paths`, `cli/src/lib.rs`). That co
 | `first_data_timeout_ms` | 500 | How long an auto listener waits for the client's first bytes before choosing by port |
 | `health` | `127.0.0.1:8099` | Control server (`/health`, `/dashboard`, `/api/*`). Must be loopback |
 | `max_events_mb` | 256 | Rotate `events.jsonl` past this size (0 = never) |
-| `max_pcap_mb` | 1024 | Rotate `traffic.pcap` / `wire.pcap`. 0 = never, **and the previous run's pcap is truncated** (flaw `BUG-09`) |
+| `max_pcap_mb` | 1024 | Rotate `traffic.pcap` / `wire.pcap`. 0 = never. A previous run's pcaps move to `previous/` at start |
 | `keep_rotations` | 4 | Rotated files kept |
 | `max_files_mb` | 2048 | Budget for `files/`. Past it, payloads are logged but not saved |
 | `wire_capture` | false | AF_PACKET (Linux) or WinDivert sniff (Windows) into `wire.pcap` |
 | `fingerprints` | `[]` (sample config: `["fingerprints/sslbl-ja3.csv"]`) | CSV lists: fingerprint first, label last |
 | `tls_keylog` | true | NSS key log at `capture/tls-keys.log` |
+| `ca_cert`, `ca_key` | unset (sample config: `ca/fakenet-ca.pem`, `ca/fakenet-ca.key`) | Interception CA (PEM): loaded if both exist, else created once and saved (key 0600). Both or neither. Unset: a new CA per start |
 
 ## `[daemon]` (`DaemonConfig`)
 

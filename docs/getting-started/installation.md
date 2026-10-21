@@ -54,12 +54,8 @@ The installer:
 
 It never enables diversion.
 
-```{important}
-The packaged configs reference `fingerprints/sslbl-ja3.csv`, but no install path ships
-that file. The nucleus then fails at start-up with `reading fingerprints`. Until this is
-fixed (flaw DEP-01), remove the `fingerprints = [...]` line or copy
-`nucleus/config/fingerprints/` next to the installed config.
-```
+Every install path ships `fingerprints/` (the JA3/JA4/HASSH lists the config references)
+and `hooks/` (the Frida script for [hooks](../usage/reverse-engineering.md)).
 
 Windows: either install the MSI built by the release workflow and run its Start Menu
 "Set up" shortcut, or run `deploy\windows\install.ps1` as Administrator from the unpacked
@@ -76,9 +72,8 @@ docker run --rm -p 8080:8080 -p 53:53/udp \
 ```
 
 The image runs both processes, so they share loopback, and serves the fake services on the
-published ports with no host diversion. As shipped, the image doesn't build (the builder
-stage is `rust:1.83` while the code needs 1.85, flaw DEP-02), and its `/bin/sh`
-entrypoint exits under `dash` before starting the nucleus (flaw DEP-03).
+published ports with no host diversion. The builder stage is `rust:1.89`; the entrypoint and
+HEALTHCHECK use bash.
 
 ## Verify a release
 

@@ -9,7 +9,7 @@
 | `nucleus/scripts/interop-iot.py` | `interop-iot.py mqtt\|coap\|websocket PORT` | Standard-library clients: MQTT CONNECT and CONNACK, CoAP GET `/.well-known/core`, WebSocket upgrade with an echo frame |
 | `nucleus/scripts/rea-hints.sh` | `rea-hints.sh SAMPLE OUT.jsonl [ghidra\|ida\|...]` | Runs REA (`rea`, or `npx -y rea-agents@6.5.0`): procedures, strings, analysis → JSONL for `[explorer] rea` |
 | `nucleus/scripts/test-linux-diversion.sh` | `test-linux-diversion.sh` | Builds the `linux_diversion` test and runs it under `unshare --map-root-user --net` with `FAKENET_NETNS_TEST=1` (never touches the host's iptables) |
-| `nucleus/fuzz/run-all.sh` | `run-all.sh [SECONDS]` (default 120) | `cargo fuzz run` for each target with `seeds/<target>` and `corpus/<target>`, printing only statistics. Always exits 0 (flaw DEP-05) |
+| `nucleus/fuzz/run-all.sh` | `run-all.sh [SECONDS]` (default 120) | `cargo fuzz run` for each target with `seeds/<target>` and `corpus/<target>`, printing only statistics. Exits non-zero if a target fails or finds a crash |
 | `nucleus/examples/explorer-demo/run-demo.sh` | `run-demo.sh [REA_JSON...]` (`ROUNDS`, `KEEP`) | The explorer demo (see {doc}`../usage/explorer`) |
 
 ## Data files
@@ -31,7 +31,7 @@
 | Workflow / job | Runs |
 |---|---|
 | `ci.yml` `nucleus-linux` | Installs the protocol clients, `cargo test --workspace`, `scripts/interop.sh`, and the `linux_diversion` test as root in `unshare --net` |
-| `ci.yml` `nucleus-windows` | Downloads WinDivert 2.2.2 (no checksum, flaw DEP-04), `cargo test --workspace` (the diverter isn't exercised) |
+| `ci.yml` `nucleus-windows` | Downloads WinDivert 2.2.2 and checks its pinned SHA-256, `cargo test --workspace` (the diverter isn't exercised) |
 | `ci.yml` `daemon` | `mvn -B package`, then `cargo test -p fakenet-cli --test camel_link -- --ignored` against the real jar |
 | `release.yml` (tags `v*`) | Linux tarball (`package.sh`); Windows build, stage, zip, `wix build` MSI; `SHA256SUMS`; keyless `cosign sign-blob` for every file; `gh release create` |
 

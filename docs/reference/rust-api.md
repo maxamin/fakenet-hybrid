@@ -57,7 +57,8 @@ to `nucleus/crates/`. `cargo doc --workspace --no-deps --open` renders the doc c
 | Item | Description |
 |---|---|
 | `Limits` | `max_events_bytes`, `max_pcap_bytes`, `max_files_bytes`, `keep` (0 = unlimited) |
-| `Capture::{open, open_with}` | Create the folder, open `events.jsonl` (append) and a new `traffic.pcap` |
+| `Capture::{open, open_with}` | Create the folder (first moving a previous run's outputs to `previous/<time>/`, `archive_previous`), open `events.jsonl` and a new `traffic.pcap` |
+| `archive_previous(dir)`, `with_rotations(events)` | Archive a previous run; a log and its rotated siblings, oldest first |
 | `Capture::log(kind, fields)` | Append and flush one record; keep it in the 5,000-record ring |
 | `Capture::recent(after, limit)` | Ring records after a sequence number, and the latest number |
 | `Capture::event_files()` | Rotated logs oldest first, then the current one |
@@ -80,7 +81,10 @@ Framework:
 |---|---|
 | `Server::start(ctx, bind, listeners)`, `Server::address(name)`, `server::Listener` | Bind and run every listener; the bound addresses |
 | `Context` | Shared state: link, capture, `defaults` (`ArcSwap`), CA, timeouts, `original` lookup, explorer, limits, fingerprints |
-| `Session::{new, set_protocol, protocol, log, client_data, server_data, decide, answer, notify}` | Per-connection state and the decide-or-default step |
+| `Session::{new, set_protocol, protocol, log, client_data, server_data, decide, decide_with_default, answer, notify}` | Per-connection state and the decide-or-default step (hooks, then the daemon/explorer, then live manual mode) |
+| `manual::{ManualConfig, Manual::{new, wants, hold, pending, resolve, release_all}, Verdict, parse_verdict}` | Live manual mode |
+| `hooks::{HookConfig, HookAction, Hooks::{new, fire, paused, resume}}` | Reverse-engineering hooks (pause, dump, command) |
+| `event_filter::{EventFilter, host_of, request_text}` | The protocol/host/text filter both use |
 | `Original`, `OriginalLookup` | Real endpoints from a rewriting diverter (Windows) |
 | `dispatch::{handle_tcp, serve, serve_tunnel, terminate_tls, udp_protocol, handle_udp}` | Handler selection, TLS, tunnels |
 | `limits::{LimitsConfig, Limits::{new, admit, hold, stats}, SessionPermit, Held::grow}` | Resource limits |
@@ -89,7 +93,7 @@ Framework:
 | `stream::{Stream, BoxStream, MAX_LINE, read_line, read_raw_line, send, PrefixedStream}` | Stream helpers |
 | `lines::{Lines::{new, read, read_raw, read_exact, send, respond, starttls}, split_command, preview}` | Line-protocol helpers |
 | `custom::{parse_ini, Section, CustomResponses::{load, match_http}, HttpCustom::matches, HttpResponse, RawResponse, replace_date, run_http_provider, run_tcp_provider, run_udp_provider, filter}` | FakeNet-NG Custom Responses and listener filters |
-| `tls::{TlsAuthority::{generate, certificate_for, config_for, server_config, log_keys_to, ca_pem, ca_der}, random_bytes, DEFAULT_HOSTNAME}` | Per-run CA and certificates |
+| `tls::{TlsAuthority::{generate, load_or_create, certificate_for, config_for, server_config, log_keys_to, ca_pem, ca_der}, random_bytes, DEFAULT_HOSTNAME}` | The interception CA (new, or saved and reused) and certificates |
 | `config::{ListenerConfig, ListenerProtocol, AutoKeyword, Defaults, *Defaults, RawMode, bind_any}` | Configuration types |
 | `fuzzing::{tcp, udp, TCP, UDP}` (feature `fuzzing`) | Drive a handler with bytes in memory |
 
@@ -163,3 +167,6 @@ Protocol modules (each `handle` serves one session; see {doc}`protocols`):
 | `replay::replay(link, records)` | `--replay` |
 | `har::{exchanges, rules}` | `--rules-from-har` |
 | `import::convert(ini, base)` | `--import-fakenet-ini` |
+| `read_records(files)` | Parse event files |
+| `diff::{capture_files, behaviour, compare, render}` | `--diff` |
+| `infer::{group_messages, analyse, dissector, infer, Transform, parse_transform, apply, decode}` | `--infer`, `--decode` |

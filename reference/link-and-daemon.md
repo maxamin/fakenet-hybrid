@@ -112,7 +112,7 @@ Set by rules: `FakenetClose`, `FakenetDelayMs`, `FakenetRoute`.
 | Protocol | Body a rule sets |
 |---|---|
 | http (also h2, h3, websocket upgrade, CONNECT) | A full raw HTTP/1.1 response. Framing headers are recomputed. If it does not parse, it becomes a 200 with the text as body. For CONNECT and WebSocket, any response refuses the tunnel |
-| dns (also DoT, DoH) | Lines: `A ip`, `AAAA ip`, `MX [pref] name`, `TXT text` (≤255 bytes, flaw `BUG-01`), `CNAME`/`NS`/`PTR name`, or the single word `NXDOMAIN`, `SERVFAIL` or `REFUSED` |
+| dns (also DoT, DoH) | Lines: `A ip`, `AAAA ip`, `MX [pref] name`, `TXT text` (split into 255-byte strings), `CNAME`/`NS`/`PTR name`, or the single word `NXDOMAIN`, `SERVFAIL` or `REFUSED` |
 | raw, websocket, mqtt (message payload), coap (payload), telnet, finger, whois, daytime, qotd | Bytes sent as they are |
 | smtp, pop3, imap, ftp, irc, redis | The full reply lines (RESP for redis) that replace the default reply |
 | ftp RETR, tftp RRQ (`meta.file = true`) | The file content |

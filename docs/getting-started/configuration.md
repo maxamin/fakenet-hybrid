@@ -26,7 +26,7 @@ those fail only at start.
 - a UDP listener has `tls = true`.
 
 It doesn't check that an `auto` listener exists for each transport when the diverter is on.
-Without one, unmatched traffic is not redirected at all (flaw LEAK-04).
+Without one, unmatched traffic is blocked (`block_undiverted`, default on); with `block_undiverted = false` the config is refused.
 
 ## `[nucleus]`
 
@@ -38,12 +38,13 @@ Without one, unmatched traffic is not redirected at all (flaw LEAK-04).
 | `first_data_timeout_ms` | 500 | How long an `auto` listener waits for the client's first bytes before choosing a protocol by port |
 | `health` | `127.0.0.1:8099` | Control server (`/health`, `/dashboard`, `/api/*`). Must be loopback |
 | `max_events_mb` | 256 | Rotate `events.jsonl` past this size. 0 = never |
-| `max_pcap_mb` | 1024 | Rotate `traffic.pcap` and `wire.pcap`. 0 = never, and then the previous run's `traffic.pcap` is overwritten at start (flaw BUG-03) |
+| `max_pcap_mb` | 1024 | Rotate `traffic.pcap` and `wire.pcap`. 0 = never. A previous run's pcaps are moved to `previous/` at start, never overwritten |
 | `keep_rotations` | 4 | Rotated files kept (`events.1.jsonl` is the newest) |
 | `max_files_mb` | 2048 | Budget for `files/`. Past it, payloads are logged but not saved. Existing files count towards it |
 | `wire_capture` | false | Record every real packet into `wire.pcap` (AF_PACKET on Linux, a WinDivert sniff handle on Windows) |
 | `fingerprints` | `[]` | CSV lists of known JA3/JA4/HASSH fingerprints: first field the fingerprint, last field the label, `#` comments. Later files win |
 | `tls_keylog` | true | Write TLS secrets (TCP and QUIC) to `capture/tls-keys.log` in NSS key-log format |
+| `ca_cert`, `ca_key` | unset | The interception CA (PEM). Loaded when both files exist; created and saved there when neither does (key mode 0600), so the VM trusts it across restarts. Set both or neither. Unset: a new CA at every start. The sample configs use `ca/fakenet-ca.pem` and `ca/fakenet-ca.key` |
 
 ## `[daemon]`
 
@@ -85,7 +86,7 @@ Each saved file is scanned by `yara -w -a 30 -C` in one background thread.
 | `ignore_ports` | `[]` | Destination ports never diverted, TCP and UDP. **Traffic to them reaches the real network** |
 | `excluded_processes` | `[]` | Process names never diverted. Linux matches the `comm` name (15 characters), Windows the image file name. Single-host mode only. A sample can claim one of these names (flaw LEAK-02) |
 | `queue_num` | 4242 | Linux NFQUEUE number, used only with `excluded_processes` |
-| `ipv6` | true | Also install ip6tables rules. A failure is only a warning, and IPv6 then leaves undiverted (flaw LEAK-03) |
+| `ipv6` | true | Also install ip6tables rules. A failure is fatal; set `ipv6 = false` where there is no IPv6 (it is then neither diverted nor blocked) |
 | `answer_ping` | true | ICMP echo to any address gets a reply |
 | `gateway_address` | `[]` | Windows gateway mode: this host's addresses on the analysis network |
 | `fix_dns`, `fix_dns_server` | false, `192.0.2.53` | Windows: point every interface's DNS at this server while running (FakeNet-NG ModifyLocalDNS); restored on stop |
@@ -111,13 +112,13 @@ explorer need a restart.
 | `dns.nxdomain_random` | false | NXDOMAIN for names whose first label looks random (DGA-style) |
 | `dns.aaaa` | none | Address for AAAA queries. None means an empty answer (NODATA) |
 | `dns.mx` | `mail.fakenet.local` | MX answer, preference 10 |
-| `dns.txt` | `FAKENET` | TXT answer. Keep it under 256 bytes (flaw BUG-01) |
+| `dns.txt` | `FAKENET` | TXT answer (split into 255-byte strings when longer) |
 | `dns.ttl` | 60 | TTL of every answer |
 | `raw.mode`, `raw.response` | `echo`, `""` | Raw listeners echo, or (`static`) send `response` |
 | `mail.hostname` | `mail.fakenet.local` | SMTP greeting and EHLO name |
 | `ftp.root` | none | Files served by RETR and listed by LIST |
 | `ftp.banner` | `FTP Server Ready` | 220 greeting |
-| `ftp.passive_ports` | `[0, 0]` | Passive data port range. **Set a range when diverting**: the diverter keeps that range's ports, while `[0, 0]` picks random ports that the diverter sends to the `auto` listener instead (flaw BUG-06). The sample config uses `[60000, 60010]` |
+| `ftp.passive_ports` | `[60000, 60010]` | Passive data port range; the diverter keeps these ports. `[0, 0]` (any free port) is refused when the diverter is on, since those ports would be diverted to the `auto` listener |
 | `irc.server_name` | `irc.fakenet.local` | Server prefix |
 | `tftp.root` | none | Files served on RRQ |
 | `ssh.banner` | `SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.10` | Version string |
@@ -175,3 +176,29 @@ with `CAMEL_*` environment variables.
 | `fakenet.audit.dir` | `audit` | Wire Tap JSONL, `events-YYYYMMDD.jsonl` |
 | `fakenet.siem.ecs-uris`, `fakenet.siem.splunk-uris`, `fakenet.siem.splunk-token`, `fakenet.siem.syslog-uris` | blank | SIEM outputs; comma-separated Camel URIs. See {doc}`../usage/siem` |
 | `fakenet.library.*` | see the rules library | Parameters of `daemon/rules-library/` routes |
+
+## `[manual]`: live manual mode
+
+Requests the filter selects wait for the analyst in the dashboard. See
+[reverse engineering](../usage/reverse-engineering.md).
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | false | Hold matching requests for an answer from the dashboard |
+| `timeout_ms` | 120000 | A held request nobody answers gets the proposed answer after this |
+| `protocols` | `[]` | Only these protocols (empty: all) |
+| `hosts` | `[]` | Only these hosts and their subdomains, or destination IPs (empty: all) |
+| `contains` | unset | Only requests whose path, DNS name or command contains this (case-insensitive) |
+
+## `[[hook]]`: reverse-engineering hooks
+
+Each hook takes the same `protocols`, `hosts` and `contains` filter keys, plus:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `name` | required | Unique; names the output folder `capture/hooks/<name>-<request>-<pid>/` |
+| `actions` | required | Any of `pause` (SIGSTOP, resume from the dashboard), `dump` (readable memory, Linux), `command` |
+| `command` | `[]` | For `command`: the argv, run without a shell. Placeholders: `{pid}`, `{session_id}`, `{request_id}`, `{protocol}`, `{event}` (the event as a JSON file), `{dir}` |
+| `wait_ms` | 0 | Hold the answer until the command exits, at most this long |
+| `once` | false | Fire for the first matching event only |
+| `max_dump_mb` | 512 | Largest dump written |

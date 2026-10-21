@@ -21,7 +21,7 @@ extended `default.ini`.
 | Anything without an equivalent | an escaped `# NOTE:` comment |
 
 The importer never enables the diverter. Review the result, add an `auto` listener per
-transport if you divert (flaw LEAK-04), and set `passive_ports` (flaw BUG-06).
+transport if you divert with `block_undiverted = false` (validation refuses it otherwise), and keep `passive_ports` a range.
 
 ## Custom Responses
 
@@ -41,7 +41,7 @@ Source: `nucleus/crates/listeners/src/custom.rs`.
   `ListenerType` is `HTTP`, `TCP` or `UDP` matching the listener. Only `http` and `raw`
   listeners take a `custom` file.
 - HTTP sections: `HttpHosts` (case-insensitive, with or without a port) and/or `HttpURIs`
-  (suffix match on the full URI, including the query string, flaw BUG-14); both must match
+  (suffix match on the full target or on its path, so `/gate.php` matches `/gate.php?id=1`); both must match
   when both are set. Exactly one of `HttpRawFile`, `HttpStaticString` (with an optional
   `ContentType`) or `HttpDynamic`.
 - Raw sections: exactly one of `TcpRawFile`/`TcpStaticString`/`TcpStaticBase64`/`TcpDynamic`

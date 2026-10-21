@@ -5,7 +5,7 @@ on, and only inside the analysis VM.
 
 ```{warning}
 The diverter redirects; it doesn't block. Some traffic still leaves, and stopping the
-nucleus restores the network. See flaws LEAK-01 to LEAK-04.
+nucleus removes the diversion; on Linux outbound traffic stays blocked until `--restore-network` (`block_after_stop`). See flaws LEAK-01 (Windows) and LEAK-02.
 ```
 
 ## The plan

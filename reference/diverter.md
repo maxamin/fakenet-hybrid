@@ -34,7 +34,7 @@ verbatim).
 | Item | Role |
 |---|---|
 | `cleanup_commands()`, `cleanup_family`, `cleanup()` | Delete the jumps (up to 8 times each) and flush and delete the chains, for v4 and v6 |
-| `Active::start` | Cleans up first. Applies v4 (an error is fatal), then v6 (an error is only a warning: flaw `LEAK-01`). Starts the NFQUEUE thread when there are exclusions |
+| `Active::start` | Cleans up first. Applies v4 (an error is fatal), then v6 (an error is fatal unless `ipv6 = false`). Starts the NFQUEUE thread when there are exclusions |
 | `Active::stop` | Remove the rules and join the queue thread |
 | `start_queue(num, excluded)` | Non-blocking NFQUEUE. For each first packet: `packet::parse`, then `find_process`, then a mark if `is_excluded(comm name)`. The verdict is always Accept |
 | `is_excluded(name, list)` | Case-insensitive match on the name |

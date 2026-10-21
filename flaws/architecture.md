@@ -38,7 +38,7 @@ maintainers time.
   `schema/fakenet-link-v1.schema.json`.
 - What: the two implementations agree because they share three HMAC test vectors and the
   example JSON files. Neither side validates messages against the JSON Schema at run
-  time, and the protocol list is hand-copied (see BUG-12).
+  time, and the protocol list is hand-copied (`WarmUpTest` now checks it against the schema).
 - Fix: generate the Java constants and protocol list from the JSON Schema, and run a
   schema-validation test over both sides' serialised output.
 
@@ -61,7 +61,7 @@ maintainers time.
 
 - Where: `nucleus/crates/cli/src/main.rs` (the SIGHUP task, `#[cfg(unix)]`).
 - What: only `[defaults]` reloads. Fingerprint lists, listeners, `[limits]`, the explorer
-  and YARA rules need a restart, which also replaces the CA (BUG-05). Windows has no reload
+  and YARA rules need a restart, which also replaces the CA unless `ca_cert`/`ca_key` are set. Windows has no reload
   at all.
 - Fix: also reload the fingerprint map and YARA rules (both are swappable); on Windows,
   watch the config file or add a control endpoint (`POST /reload`, authenticated).

@@ -6,36 +6,28 @@ ports. It cannot read root-only files.
 
 ## SEC-01
 
-**`--run` runs the sample with the nucleus's privileges** · Medium · Confirmed
+**Windows: `--run` runs the sample as Administrator** · Medium · Confirmed
 
-- Where: `nucleus/crates/cli/src/run.rs:63-70` (`tokio::process::Command::new(&sample.path)`).
-- What: the nucleus needs root (Linux) or Administrator (Windows) to divert, and `--run`
-  spawns the sample directly, so the sample inherits those rights. There is no user switch,
-  no dropped capabilities and no job object.
-- Impact: the sample can remove the iptables rules or WinDivert handles, kill the nucleus,
-  read `link.secret`, or tamper with the capture. The diversion then stops containing it
-  (see LEAK-01).
-- Fix: add `--run-as USER` (Unix: `setuid`/`setgid` in `pre_exec`, with capabilities
-  dropped; Windows: `CreateProcessAsUser` with a restricted token). Make it the default
-  when the nucleus runs as root, and log the identity in `sample_started`.
+- Where: `nucleus/crates/cli/src/run.rs` (`RunAs::resolve` is Unix-only).
+- What: on Unix, `--run-as USER` (required when the nucleus is root) switches user and
+  groups before exec. On Windows the sample inherits the nucleus's Administrator token.
+- Impact: the sample can close the WinDivert handles, kill the nucleus, read
+  `link.secret`, or tamper with the capture.
+- Fix: `CreateProcessAsUser` with a restricted or low-integrity token, the default when
+  the nucleus is elevated.
 
 ## SEC-02
 
-**`--run` kills only the direct child** · High · Confirmed
+**Windows: `--run` tracks only the direct child** · Medium · Confirmed
 
-- Where: `run.rs:65` (`kill_on_drop(true)`), `run.rs:85-98` (`child.kill()`), and
-  `main.rs:265-267`, which stops the diverter after the run.
-- What: malware commonly forks, daemonises or injects into another process and then exits.
-  `execute` waits for the direct child, adds 5 s of grace, and ends the run. `kill()` and
-  `kill_on_drop` reach only that one PID. On Linux a process that `setsid()`s survives.
-  On Windows, children outside a Job Object survive.
-- Impact: the run ends early (behaviour after the grace period is never captured). Worse,
-  the surviving descendants keep running after shutdown removes the diversion, with
-  real network access.
-- Fix: start the sample in its own process group/session and kill the group (Linux: a
-  cgroup or `PR_SET_CHILD_SUBREAPER` with a reaper loop; Windows: a Job Object with
-  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`). End the run when the whole tree has exited, not
-  the first process.
+- Where: `nucleus/crates/cli/src/run.rs` (`Tree`: session and cgroup are Unix/Linux).
+- What: on Linux the sample gets its own session and cgroup, the run ends when the whole
+  tree has exited, and everything in it is killed. On Windows only the direct child is
+  waited for and killed; descendants survive.
+- Impact: behaviour after the first process exits is missed, and descendants outlive
+  the run (with real network access once the diversion goes: LEAK-01).
+- Fix: a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, assigned at creation
+  (`CREATE_SUSPENDED`, assign, resume); end the run when the job has no processes.
 
 ## SEC-03
 
@@ -99,33 +91,6 @@ ports. It cannot read root-only files.
   connect to `:8090`, read events or, by taking the port first, answer them.
 - Fix: refuse to start without a secret unless `--insecure-link` is given; have
   `--generate-secret` print the two config lines to add.
-
-## SEC-07
-
-**CSV formula injection in `indicators.csv`** · Low · Confirmed
-
-- Where: `nucleus/crates/capture/src/indicators.rs:225` (`to_csv`, the `quote` closure).
-- What: values come from the sample (URLs, User-Agents, email addresses). They are quoted
-  for commas and quotes, but a value starting with `=`, `+`, `-`, `@`, tab or CR is not
-  neutralised.
-- Impact: opening the CSV in Excel or LibreOffice can evaluate a formula chosen by the
-  malware author.
-- Fix: prefix such values with `'` (OWASP's CSV-injection guidance), or document that the
-  file is for tools only.
-
-## SEC-08
-
-**`--rules-from-har` escaping is incomplete** · Low · Confirmed
-
-- Where: `nucleus/crates/cli/src/har.rs:54` (`groovy_string`).
-- What: the keys (`METHOD host /path`) come from the HAR. Only `\` and `'` are escaped. A
-  newline in the method or URL ends the single-quoted Groovy string and the YAML block
-  scalar, so the rest of the line becomes Groovy code or YAML route steps.
-- Impact: a crafted HAR, whose URLs came from a C2 the attacker controls, could inject
-  code that the daemon runs when the generated route loads. Browsers and mitmproxy
-  percent-encode such characters, so this needs a hand-edited or unusual HAR.
-- Fix: base64-encode the keys as well (the responses already are), or reject keys with
-  control characters.
 
 ## SEC-09
 

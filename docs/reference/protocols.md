@@ -45,8 +45,8 @@ logged as DNS. Record: `doh`.
 
 quinn + h3, TLS 1.3 with ALPN `h3`, certificates from the same CA. One QUIC connection is
 one session; each request goes through `http::answer`, so events and defaults are the
-same. Records: `tls_handshake` (`sni`, `alpn: "h3"`). The original destination is not
-recovered (flaw BUG-10).
+same. Records: `tls_handshake` (`sni`, `alpn: "h3"`). The original destination comes
+from connection tracking.
 
 ### `websocket` (`websocket.rs`)
 
@@ -96,7 +96,7 @@ UDP, and TCP with the 2-byte length prefix (several queries per connection). Als
   STARTTLS resets the envelope and discards pipelined bytes.
 - Records: `credentials` (AUTH PLAIN and LOGIN, decoded), `email` (with a 512-byte
   preview), `starttls_injection_discarded`.
-- See flaw BUG-07 about non-UTF-8 content.
+- Messages are saved byte for byte (8-bit content kept; DATA lines up to the 32 MiB message limit).
 
 ### `pop3` (`pop3.rs`)
 
@@ -113,8 +113,8 @@ UDP, and TCP with the 2-byte length prefix (several queries per connection). Als
   STATUS, FETCH (the items asked for; any body item returns the whole message), SEARCH, ID,
   LOGOUT; NOOP, CHECK, CLOSE, EXPUNGE, STORE, COPY, CREATE, DELETE, RENAME, (UN)SUBSCRIBE,
   APPEND, ENABLE answer OK.
-- Event: `tag`, `command`, `argument`. Records: `credentials`. Literals (`{n}`) are not
-  supported (flaw BUG-17).
+- Event: `tag`, `command`, `argument`. Records: `credentials`. Literals (`{n}`, and
+  `{n+}` from RFC 7888) are read and inlined, up to 1 MiB each and 16 per command.
 
 ## Files
 

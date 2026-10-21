@@ -49,7 +49,7 @@ Headers a rule may set:
 |---|---|
 | `http` (HTTP/1.1, h2, h3) | A complete raw HTTP/1.1 response: `HTTP/1.1 200 OK\r\nHeader: v\r\n\r\nbody`. `Content-Length`, `Transfer-Encoding` and `Connection` are recomputed. Text that doesn't parse becomes the body of a 200 |
 | `http` CONNECT, WebSocket upgrade | Any response refuses the tunnel or upgrade and is sent instead |
-| `dns` (UDP, TCP, DoT, DoH) | Lines: `A ip`, `AAAA ip`, `MX [pref] name`, `TXT text` (at most 255 bytes, flaw BUG-01), `CNAME name`, `NS name`, `PTR name`; or one of `NXDOMAIN`, `SERVFAIL`, `REFUSED`. Bad lines are skipped and logged as `invalid_answer` |
+| `dns` (UDP, TCP, DoT, DoH) | Lines: `A ip`, `AAAA ip`, `MX [pref] name`, `TXT text` (longer than 255 bytes: split into several strings), `CNAME name`, `NS name`, `PTR name`; or one of `NXDOMAIN`, `SERVFAIL`, `REFUSED`. Bad lines are skipped and logged as `invalid_answer` |
 | `raw`, `websocket`, `mqtt` (PUBLISH), `coap`, `telnet`, `finger`, `whois`, `daytime`, `qotd` | The bytes to send |
 | `smtp`, `pop3`, `imap`, `ftp`, `irc` | The complete reply line(s), replacing the default reply |
 | `redis` | A RESP reply (`+OK\r\n`, `$3\r\nfoo\r\n`) |
@@ -111,8 +111,8 @@ if (count == 1) {
 - Each Groovy script compiles on first use, which can take seconds on a cold JVM. The
   warm-up (`WarmUp.java`) compiles every Groovy expression in every route and sends one
   placeholder event per protocol through `direct:decide` before the link opens. Scripts
-  therefore run once on placeholder data: keep them free of side effects. Ten protocols
-  have no placeholder (flaw BUG-12).
+  therefore run once on placeholder data: keep them free of side effects. Every protocol
+  of the schema gets one.
 - `link.yaml` and `decisions.yaml` reload independently
   (`routes-reload-remove-all-routes = false`). A rule file can't redefine the link routes'
   IDs.

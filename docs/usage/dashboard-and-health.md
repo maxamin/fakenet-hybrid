@@ -20,6 +20,13 @@ constant time. Without a secret, everything is open.
 | `GET /dashboard.js`, `/dashboard.css` | Served | Served |
 | `GET /api/records?after=N&limit=L` | 401 | Up to `L` (default 1000, at most 5000) records newer than sequence `N`, from a 5,000-record ring in memory, plus the latest sequence number |
 | `GET /api/summary` | 401 | Link health, listeners, limits, and an explorer summary (top 8 templates by reward) |
+| `GET /api/manual` | 401 | Live manual mode: `enabled`, `timeout_ms`, and the held requests (`id`, request line, host, process, payload and proposed answer in base64, `expires_at_ms`) |
+| `POST /api/manual/<id>` | 401 | Answer a held request: `{"action":"proposed"}`, `{"action":"send","response":"text"}` or `"response_base64"`, optional `"close":true`, or `{"action":"close"}`. 410 when no longer held |
+| `GET /api/paused` | 401 | Processes paused by hooks |
+| `POST /api/paused/<pid>/resume` | 401 | Resume (SIGCONT) a process a hook paused |
+
+POSTs must be `application/json`, which a cross-site form can't send, on top of the
+`SameSite=Strict` cookie. Bodies are limited to 16 MiB.
 
 Every response carries a strict CSP (`default-src 'none'; script-src 'self'; ...`),
 `nosniff`, `no-store` and `no-referrer`.

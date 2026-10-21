@@ -42,4 +42,4 @@ Add it to the right struct (`cli::NucleusConfig`, `listeners::config::*Defaults`
 
 Each entry in `flaws/` gives a location and a suggested fix. When you fix one, delete its
 section, remove it from the index in `flaws/README.md`, and update any page in `docs/`
-that mentions its ID (`rg -n 'BUG-04' docs flaws`).
+that mentions its ID (`rg -n 'BUG-16' docs flaws`).

@@ -11,8 +11,8 @@ what each deployment file does.
 | `deploy/linux/fakenet-daemon.service` | `User=fakenet`, `WorkingDirectory=/opt/fakenet-hybrid/daemon`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `NoNewPrivileges`; writable: the audit folder and `routes/`. `Restart=on-failure` |
 | `deploy/linux/fakenet-nucleus.service` | Runs as root. `KillSignal=SIGINT` (clean shutdown with report), `ExecStopPost=... --restore-network`, `Restart=on-failure` |
 
-Because `ExecStopPost` removes the diversion after every stop, including crashes, the
-VM is online between a crash and the restart (flaw LEAK-01).
+`ExecStopPost` runs `--restore-network --keep-block` after every stop, including crashes:
+the diversion goes, but outbound traffic stays blocked until `--restore-network`.
 
 ## Windows
 
@@ -27,8 +27,8 @@ VM is online between a crash and the restart (flaw LEAK-01).
 
 | File | What it does |
 |---|---|
-| `deploy/docker/Dockerfile` | Three stages: the nucleus (`rust:1.83-slim-bookworm`, too old: flaw DEP-02), the daemon (Maven, Temurin 21), and the runtime (`eclipse-temurin:21-jre-noble`, user `fakenet`, uid 10001). Copies the routes, the default files, the container config and the entrypoint. The HEALTHCHECK uses `/dev/tcp` under `/bin/sh` (flaw DEP-03) |
-| `deploy/docker/entrypoint.sh` | Generates the secret, starts the daemon in the background, waits up to 60 s for `:8092/observe/health`, then `exec`s the nucleus. Under `dash` the wait loop exits the script (flaw DEP-03) |
+| `deploy/docker/Dockerfile` | Three stages: the nucleus (`rust:1.89-slim-bookworm`), the daemon (Maven, Temurin 21), and the runtime (`eclipse-temurin:21-jre-noble`, user `fakenet`, uid 10001). Copies the routes, the default files, the container config and the entrypoint. The HEALTHCHECK uses bash's `/dev/tcp` |
+| `deploy/docker/entrypoint.sh` | Generates the secret, starts the daemon in the background, waits up to 60 s for `:8092/observe/health`, then `exec`s the nucleus. |
 | `deploy/docker/fakenet.container.toml` | The sample config with `bind = "0.0.0.0"`, `secret_file = "/opt/fakenet/link.secret"` and diversion off |
 
 Mount `daemon/routes` at `/opt/fakenet/routes` to edit rules live.
@@ -38,7 +38,7 @@ Mount `daemon/routes` at `/opt/fakenet/routes` to edit rules live.
 - `scripts/package.sh`: builds the nucleus (release) and the daemon (`mvn package`, with
   tests), stages `bin/`, `daemon/{jar,lib,routes}`, `config/{fakenet.toml,default-files}`,
   `deploy`, `schema`, `docs` and `README.md`, and writes
-  `dist/fakenet-hybrid-<version>-<host triple>.tar.gz` plus `.sha256`. It leaves out
-  `config/fingerprints/` (flaw DEP-01).
+  `dist/fakenet-hybrid-<version>-<host triple>.tar.gz` plus `.sha256`. It includes
+  `config/fingerprints/` and `config/hooks/`.
 - `.github/workflows/release.yml` (on `v*` tags): the Linux tarball; the Windows zip and
   MSI; `SHA256SUMS`; keyless `cosign sign-blob` for every file; a GitHub release.

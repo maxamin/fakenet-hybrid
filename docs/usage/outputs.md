@@ -10,7 +10,7 @@ immediately, because analysis VMs are often reverted abruptly.
 | `wire.pcap` | With `wire_capture = true`: every real packet, including traffic never diverted |
 | `tls-keys.log` | With `tls_keylog = true` (default): TLS secrets in NSS key-log format, to decrypt `wire.pcap` in Wireshark |
 | `files/` | HTTP request bodies, emails (`.eml`), FTP and TFTP uploads |
-| `ca.pem` | The interception CA for this start |
+| `ca.pem` | The interception CA: the saved one (`[nucleus] ca_cert`), or a new one for this start |
 | `yara-rules.compiled` | With `[yara]`: the compiled rules |
 | `report.html` | Written at every stop |
 | `indicators.csv`, `indicators.stix.json`, `indicators.misp.json` | Written at every stop |
@@ -67,8 +67,9 @@ It is not a byte-exact capture; use `wire.pcap` (or tcpdump) for that.
 `Capture::save_file` writes `files/<prefix>_<NNNNNN>_<name>`. The name is the client's,
 reduced to its last path component, with characters other than ASCII letters, digits and
 `.-_` replaced by `_`, and cut to 100 characters. Prefixes: `http_body`, `smtp`, `ftp`,
-`tftp`. The counter restarts at every start, so re-using a capture folder can overwrite
-earlier files (flaw BUG-04). Past `max_files_mb`, files are logged but not saved.
+`tftp`. Files are never overwritten. When a start finds a previous run in the capture folder, it
+moves that run's outputs (events, pcaps, `files/`, report, indicators) to
+`previous/<UTC time>/` first. Past `max_files_mb`, files are logged but not saved.
 
 ## `report.html`
 
@@ -99,8 +100,8 @@ Excluded: connectivity-check domains, `in-addr.arpa`, `ip6.arpa`, `local`, `loca
 `wpad`, names without a dot, and non-global addresses (private, loopback, link-local,
 documentation, CGNAT, `198.18.0.0/15`, `192.0.0.0/24`, multicast, reserved).
 
-- CSV: `type,value,count,first_seen,protocols,known`. See flaw SEC-07 before opening it in a
-  spreadsheet.
+- CSV: `type,value,count,first_seen,protocols,known`. Values starting with `=`, `+`, `-`, `@`, tab or CR get a leading `'` so
+  spreadsheets don't evaluate them as formulas.
 - STIX 2.1: an identity, optionally a `file` (deterministic ID) and a `malware` object for
   the `--run` sample, one `indicator` per value and an `indicates` relationship to the
   malware. JA3/JA4/HASSH are left out (no STIX pattern for them).

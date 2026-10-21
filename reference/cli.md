@@ -40,8 +40,8 @@ Modes are checked in this order. The first one that matches runs and the program
 Shutdown runs in this order: abort the control server, drop the listeners, stop the
 diverter, abort the background tasks, write the final explorer map, `finish_scans`
 (YARA), log `nucleus_stopped`, write `report.html`, write `run.json` (for `--run`),
-then write `indicators.*`. If `diverter.stop()` fails, the function returns early and
-the report is not written (flaw `BUG-12`).
+then write `indicators.*`. If `diverter.stop()` fails, the outputs are still written and the exit status is
+non-zero.
 
 ## `lib.rs`
 
@@ -91,8 +91,9 @@ browser.
 | `execute(sample, timeout, capture, interrupt)` | Spawn the sample with the working directory set to its folder and `kill_on_drop`. The run ends when the sample exits plus 5 s of grace, on timeout (kill), or on interrupt (kill). Logs `sample_started`, `sample_exited`, `sample_killed`, `sample_failed` |
 | `summary(sample, outcome, capture)` | The `run.json` content: sample, run, record counts by kind, events by protocol, file names |
 
-The sample runs with the nucleus's own privileges, which means root (flaw `SEC-01`).
-Only the direct child is killed (flaw `SEC-02`).
+On Unix the sample runs as `--run-as USER` (required when the nucleus is root), in its own
+session and (Linux) cgroup; the whole tree is tracked and killed. On Windows it runs with the
+nucleus's privileges and only the direct child is tracked (flaws `SEC-01`, `SEC-02`).
 
 ## `replay.rs`
 

@@ -38,7 +38,7 @@ a = "10.0.0.5"                       # an address the sample should reach, e.g. 
 ```
 
 Remove or fix the `fingerprints = [...]` line if `config/fingerprints/` is not next to your
-config (flaw DEP-01). Then validate:
+config. Then validate:
 
 ```sh
 ./target/release/fakenet-nucleus --check -c config/my.toml
@@ -63,12 +63,14 @@ cd ../nucleus
 sudo ./target/release/fakenet-nucleus -c config/my.toml
 ```
 
-It writes `config/capture/ca.pem`. Install it as a trusted root in the VM (for example
-`sudo cp config/capture/ca.pem /usr/local/share/ca-certificates/fakenet.crt &&
-sudo update-ca-certificates`) so HTTPS, SMTPS and STARTTLS look valid.
+On the first start it creates the interception CA in `config/ca/` (`ca_cert` and `ca_key`)
+and copies the certificate to `config/capture/ca.pem`. Install it as a trusted root in the
+VM once (for example `sudo cp config/capture/ca.pem /usr/local/share/ca-certificates/fakenet.crt &&
+sudo update-ca-certificates`) so HTTPS, SMTPS and STARTTLS look valid. Later starts reuse it.
 
 ```{note}
-The CA is regenerated at every start (flaw BUG-05). Install it again after each restart.
+Without `ca_cert` and `ca_key` the nucleus makes a new CA at every start, which must be
+installed again each time.
 ```
 
 ## 6. Check and watch
@@ -89,8 +91,9 @@ removes the iptables rules, finishes YARA scans and writes `report.html` and
 `indicators.*` into `config/capture/`.
 
 ```{warning}
-Stopping the nucleus removes the diversion. Anything the sample left running then has
-the real network (flaw LEAK-01). Revert the VM, or kill the sample first.
+Stopping the nucleus removes the diversion. On Linux outbound traffic stays blocked until
+`--restore-network`; on Windows anything the sample left running then has the real network
+(flaw LEAK-01). Revert the VM, or kill the sample first.
 ```
 
 If the nucleus was killed (`kill -9`, power loss), clean up with
