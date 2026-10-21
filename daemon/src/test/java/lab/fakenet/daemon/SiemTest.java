@@ -16,10 +16,10 @@ import org.junit.jupiter.api.Test;
 /** routes/siem.yaml: the Wire Tap's records as ECS, Splunk HEC and CEF */
 class SiemTest {
     private static final String RECORD = """
-        {"event":{"version":1,"type":"event","request_id":"r1","session_id":"udp-0000000000000003","protocol":"dns","transport":"udp",
+        {"event":{"version":2,"type":"event","request_id":"r1","session_id":"udp-0000000000000003","protocol":"dns","transport":"udp",
           "src":"10.0.2.15:5353","dst":"8.8.8.8:53","dport":53,"timestamp":"2026-10-17T00:00:00Z","payload":"",
           "meta":{"qname":"c2.evil.example","qtype":"A"},"process":{"pid":4242,"name":"bot.exe"}},
-         "action":{"version":1,"type":"action","request_id":"r1","session_id":"udp-0000000000000003","response":"QSAxMC42LjYuNg==","close":false,"route":"c2-dns"}}
+         "action":{"version":2,"type":"action","request_id":"r1","session_id":"udp-0000000000000003","response":"QSAxMC42LjYuNg==","close":false,"route":"c2-dns"}}
         """;
 
     private CamelContext context(Map<String, String> properties) throws Exception {

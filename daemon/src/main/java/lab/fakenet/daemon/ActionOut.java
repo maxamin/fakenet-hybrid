@@ -45,11 +45,8 @@ public class ActionOut implements Processor {
             action.put("delay_ms", delay);
         }
         action.put("route", message.getHeader(ROUTE, "default", String.class));
-        String signature = auth.sign(LinkAuth.actionText((String) action.get("request_id"), (String) action.get("session_id"), responseBase64, close, delay));
-        if (signature != null) {
-            action.put("auth", signature);
-        }
-        message.setBody(JSON.writeValueAsString(action));
+        // Sealed whole: auth, appended last, covers every field (route included)
+        message.setBody(auth.seal(JSON.writeValueAsString(action)));
     }
 
     /** Never fails: text (including Groovy GStrings, which Camel can't convert) is UTF-8 */

@@ -17,8 +17,17 @@ fn free_port() -> u16 {
 
 /// One HTTP/1.1 request; returns (status line + headers, body)
 async fn get(port: u16, path: &str, headers: &str) -> Option<(String, String)> {
+    request(port, &format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n{headers}\r\n")).await
+}
+
+/// A form POST; returns (status line + headers, body)
+async fn post_form(port: u16, path: &str, form: &str) -> Option<(String, String)> {
+    request(port, &format!("POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{form}", form.len())).await
+}
+
+async fn request(port: u16, raw: &str) -> Option<(String, String)> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).await.ok()?;
-    stream.write_all(format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n{headers}\r\n").as_bytes()).await.ok()?;
+    stream.write_all(raw.as_bytes()).await.ok()?;
     let mut response = String::new();
     tokio::time::timeout(Duration::from_secs(5), stream.read_to_string(&mut response)).await.ok()?.ok()?;
     let (head, body) = response.split_once("\r\n\r\n")?;
@@ -56,10 +65,18 @@ async fn runs_a_sample_and_serves_the_dashboard() {
     }
     let (head, _) = get(health, "/dashboard", "").await.unwrap();
     assert!(head.starts_with("HTTP/1.1 401"), "{head}");
-    let (head, _) = get(health, &format!("/dashboard?token={secret}"), "").await.unwrap();
+    // SEC-03: no secret in URLs; a form login gets a session token, never the secret
+    let (head, page) = get(health, &format!("/dashboard?token={secret}"), "").await.unwrap();
+    assert!(head.starts_with("HTTP/1.1 401") && page.contains("aren't accepted"), "{head}");
+    let (head, _) = post_form(health, "/dashboard/login", "token=wrong").await.unwrap();
+    assert!(head.starts_with("HTTP/1.1 401"), "{head}");
+    let (head, _) = post_form(health, "/dashboard/login", &format!("token={secret}")).await.unwrap();
     assert!(head.starts_with("HTTP/1.1 303") && head.contains("location: /dashboard"), "{head}");
     let cookie = head.lines().find_map(|l| l.strip_prefix("set-cookie: ")).unwrap().split(';').next().unwrap().to_string();
     assert!(head.contains("HttpOnly; SameSite=Strict"));
+    assert!(cookie.starts_with("fakenet_session=") && !cookie.contains(secret) && cookie.len() == "fakenet_session=".len() + 64, "{cookie}");
+    let (head, _) = get(health, "/api/summary", &format!("Cookie: fakenet_token={secret}\r\n")).await.unwrap();
+    assert!(head.starts_with("HTTP/1.1 401"), "the old secret cookie must not work: {head}");
     let (head, page) = get(health, "/dashboard", &format!("Cookie: {cookie}\r\n")).await.unwrap();
     assert!(head.starts_with("HTTP/1.1 200") && page.contains("<script src=\"/dashboard.js\""), "{head}");
     assert!(head.contains("content-security-policy: default-src 'none'; script-src 'self'"));

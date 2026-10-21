@@ -25,10 +25,48 @@ public class EventIn implements Processor {
     /** Payloads up to this size are also given to rules as text (FakenetText) */
     static final int MAX_TEXT = 1024 * 1024;
 
+    /** How far an authenticated event's timestamp may be from now */
+    static final java.time.Duration WINDOW = java.time.Duration.ofMinutes(5);
+    /** request_ids remembered to refuse replays (at least as long as WINDOW, at most this many) */
+    static final int SEEN = 100_000;
+
     private final LinkAuth auth;
+    /** request_id -> when it was seen, oldest first */
+    private final Map<String, Long> seen = new java.util.LinkedHashMap<>(16, 0.75f, false) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, Long> eldest) {
+            return size() > SEEN;
+        }
+    };
 
     public EventIn(LinkAuth auth) {
         this.auth = auth;
+    }
+
+    /**
+     * Replay protection on an authenticated link: a signed event is accepted once, and only
+     * near its timestamp. Null when it is fresh, else why not.
+     */
+    String replayed(Map<String, Object> event, String requestId) {
+        if (!auth.enabled()) {
+            return null;
+        }
+        long now = System.currentTimeMillis();
+        try {
+            long at = java.time.OffsetDateTime.parse(String.valueOf(event.get("timestamp"))).toInstant().toEpochMilli();
+            if (Math.abs(now - at) > WINDOW.toMillis()) {
+                return "stale timestamp";
+            }
+        } catch (java.time.format.DateTimeParseException e) {
+            return "bad timestamp";
+        }
+        synchronized (seen) {
+            seen.values().removeIf(t -> now - t > 2 * WINDOW.toMillis());
+            if (seen.putIfAbsent(requestId, now) != null) {
+                return "replayed request_id";
+            }
+        }
+        return null;
     }
 
     @Override
@@ -62,8 +100,13 @@ public class EventIn implements Processor {
             return;
         }
         String payloadBase64 = (String) event.get("payload");
-        if (!auth.verify(LinkAuth.eventText((String) event.get("request_id"), (String) event.get("session_id"), payloadBase64), event.get("auth"))) {
+        if (!auth.unseal(json)) {
             reject(message, "unsigned or forged event");
+            return;
+        }
+        String replay = replayed(event, (String) event.get("request_id"));
+        if (replay != null) {
+            reject(message, replay);
             return;
         }
         message.setHeader(KIND, "event");

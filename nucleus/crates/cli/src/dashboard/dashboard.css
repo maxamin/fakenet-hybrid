@@ -34,3 +34,7 @@ button { font: inherit; padding: 3px 10px; border: 1px solid var(--border); bord
 button:disabled { opacity: .5; cursor: default; }
 ul.paused { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px 8px 8px 28px; margin: 0 0 16px; }
 ul.paused button { margin-left: 8px; }
+.logout { margin-left: auto; }
+main.login { max-width: 420px; margin: 10vh auto; }
+main.login form { display: grid; gap: 12px; margin-top: 16px; }
+main.login input { width: 100%; }

@@ -86,7 +86,8 @@ pub struct Health {
     pub reconnects: u64,
 }
 
-type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Action, String>>>>>;
+/// request_id -> where the daemon's answer goes: its raw text, checked by `accept`
+type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Result<String, String>>>>>;
 
 struct Inner {
     config: LinkConfig,
@@ -151,12 +152,7 @@ impl Link {
         };
         let checked = result.and_then(|action| {
             action.validate_for(event).map_err(Fallback::Invalid)?;
-            match &inner.config.secret {
-                Some(secret) if !secret.verify(&auth::action_text(&action), action.auth.as_deref()) => {
-                    Err(Fallback::Invalid("unsigned or forged action".into()))
-                }
-                _ => Ok(action),
-            }
+            Ok(action)
         });
         match checked {
             Ok(action) => {
@@ -170,7 +166,7 @@ impl Link {
     /// Sends an event that needs no answer (e.g. a closed connection), if connected
     pub fn notify(&self, event: &Event) {
         let sender = self.inner.sender.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        if let (Some(sender), Ok(json)) = (sender, serde_json::to_string(&self.signed(event))) {
+        if let (Some(sender), Ok(json)) = (sender, self.wire(event)) {
             let _ = sender.try_send(Message::text(json));
         }
     }
@@ -187,8 +183,27 @@ impl Link {
         }
     }
 
-    /// The event as sent: payload cut to `max_payload` (without copying the rest), signed
-    fn signed(&self, event: &Event) -> Event {
+    /// The event's JSON as sent: `prepared`, then sealed (signed whole) when there's a secret
+    fn wire(&self, event: &Event) -> Result<String, serde_json::Error> {
+        let json = serde_json::to_string(&self.prepared(event))?;
+        Ok(match &self.inner.config.secret {
+            Some(secret) => auth::seal(secret, &json),
+            None => json,
+        })
+    }
+
+    /// The daemon's answer, checked: sealed with the secret (every field), and an Action
+    fn accept(&self, raw: &str) -> Result<Action, Fallback> {
+        if let Some(secret) = &self.inner.config.secret {
+            if !auth::unseal(secret, raw) {
+                return Err(Fallback::Invalid("unsigned or forged action".into()));
+            }
+        }
+        serde_json::from_str(raw).map_err(|e| Fallback::Invalid(format!("not an Action: {e}")))
+    }
+
+    /// The event as sent: payload cut to `max_payload` (without copying the rest), unsigned
+    fn prepared(&self, event: &Event) -> Event {
         let max = self.inner.config.max_payload;
         let mut meta = event.meta.clone();
         if event.payload.len() > max {
@@ -198,7 +213,7 @@ impl Link {
             meta["payload_bytes"] = serde_json::json!(event.payload.len());
             meta["payload_truncated"] = serde_json::json!(true);
         }
-        let mut sent = Event {
+        Event {
             version: event.version,
             kind: event.kind,
             request_id: event.request_id.clone(),
@@ -216,9 +231,7 @@ impl Link {
             meta,
             expects_reply: event.expects_reply,
             auth: None,
-        };
-        sent.auth = self.inner.config.secret.as_ref().map(|s| s.sign(&auth::event_text(&sent)));
-        sent
+        }
     }
 
     fn fallback(&self, reason: Fallback) -> Decision {
@@ -228,7 +241,7 @@ impl Link {
 
     async fn ask(&self, event: &Event) -> Result<Action, Fallback> {
         let inner = &self.inner;
-        let json = serde_json::to_string(&self.signed(event)).map_err(|e| Fallback::Error(e.to_string()))?;
+        let json = self.wire(event).map_err(|e| Fallback::Error(e.to_string()))?;
 
         let sender = inner.sender.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some(sender) = sender {
@@ -236,7 +249,7 @@ impl Link {
             inner.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(event.request_id.clone(), reply_tx);
             if sender.send(Message::text(json.clone())).await.is_ok() {
                 return match reply_rx.await {
-                    Ok(Ok(action)) => Ok(action),
+                    Ok(Ok(raw)) => self.accept(&raw),
                     Ok(Err(error)) => Err(Fallback::Error(error)),
                     Err(_) => Err(Fallback::Error("websocket closed while waiting".into())),
                 };
@@ -246,6 +259,10 @@ impl Link {
 
         match &inner.config.http_url {
             Some(url) => {
+                // Whatever holds the port gets nothing until it proves it has the secret
+                if let Some(secret) = &inner.config.secret {
+                    self.http_hello(url, secret).await?;
+                }
                 let response = inner.http
                     .post(url)
                     .header("content-type", "application/json")
@@ -257,10 +274,30 @@ impl Link {
                     return Err(Fallback::Error(format!("http status {}", response.status())));
                 }
                 let body = response.bytes().await.map_err(|e| Fallback::Error(format!("http: {e}")))?;
-                serde_json::from_slice(&body).map_err(|e| Fallback::Invalid(format!("not an Action: {e}")))
+                self.accept(&String::from_utf8_lossy(&body))
             }
             None => Err(Fallback::Unavailable),
         }
+    }
+
+    /// The HTTP channel's handshake: a fresh nonce POSTed as a Hello, which the daemon must
+    /// sign, before each event (a process that took the port while the daemon was down gets
+    /// a nonce, never an event)
+    async fn http_hello(&self, url: &str, secret: &Secret) -> Result<(), Fallback> {
+        let nonce = auth::random_hex(16);
+        let hello = Hello { version: VERSION, kind: HelloKind::Hello, nonce: nonce.clone(), auth: None };
+        let response = self.inner.http
+            .post(url)
+            .header("content-type", "application/json")
+            .body(serde_json::to_string(&hello).map_err(|e| Fallback::Error(e.to_string()))?)
+            .send()
+            .await
+            .map_err(|e| Fallback::Error(format!("http hello: {e}")))?;
+        let reply: Hello = response.json().await.map_err(|_| Fallback::Invalid("http hello: not a hello (not the daemon?)".into()))?;
+        if reply.nonce != nonce || !secret.verify(&auth::hello_text(&nonce), reply.auth.as_deref()) {
+            return Err(Fallback::Invalid("http hello: bad signature (not the daemon?)".into()));
+        }
+        Ok(())
     }
 }
 
@@ -355,18 +392,19 @@ where
 
     while let Some(message) = stream.next().await {
         match message {
-            Ok(Message::Text(text)) => match serde_json::from_str::<Action>(text.as_str()) {
-                Ok(action) => {
-                    let waiter = link.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&action.request_id);
+            // Routed by request_id; the waiting request checks the seal and parses it
+            Ok(Message::Text(text)) => match serde_json::from_str::<serde_json::Value>(text.as_str()).ok().and_then(|v| v["request_id"].as_str().map(str::to_string)) {
+                Some(request_id) => {
+                    let waiter = link.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&request_id);
                     match waiter {
                         Some(waiter) => {
-                            let _ = waiter.send(Ok(action));
+                            let _ = waiter.send(Ok(text.to_string()));
                         }
                         // Usually: answered after its deadline. Harmless.
-                        None => tracing::debug!("Action for unknown or expired request {}", action.request_id),
+                        None => tracing::debug!("Action for unknown or expired request {request_id}"),
                     }
                 }
-                Err(e) => tracing::warn!("Ignoring an invalid message from the daemon: {e}"),
+                None => tracing::warn!("Ignoring an invalid message from the daemon"),
             },
             Ok(Message::Ping(data)) => {
                 let _ = tx.try_send(Message::Pong(data));
@@ -396,14 +434,14 @@ mod payload_tests {
         let link = Link::start(LinkConfig { max_payload: 8, secret: Some(Secret::new(b"lab-secret")), ..LinkConfig::default() });
         let mut builder = fakenet_schema::EventBuilder::new(fakenet_schema::Protocol::Raw, fakenet_schema::Transport::Tcp, "10.0.0.5:1".parse().unwrap(), "10.0.0.1:2".parse().unwrap());
         let event = builder.event(b"0123456789abcdef".to_vec(), serde_json::json!({ "bytes": 16 }), true);
-        let sent = link.signed(&event);
+        let sent = link.prepared(&event);
+        assert!(auth::unseal(&secret, &link.wire(&event).unwrap()));
         assert_eq!(sent.payload, b"01234567");
         assert_eq!(sent.meta["payload_bytes"], 16);
         assert_eq!(sent.meta["payload_truncated"], true);
         assert_eq!(sent.meta["bytes"], 16);
-        assert!(secret.verify(&auth::event_text(&sent), sent.auth.as_deref()));
         let small = builder.event(b"hi".to_vec(), serde_json::Value::Null, true);
-        let sent = link.signed(&small);
+        let sent = link.prepared(&small);
         assert_eq!(sent.payload, b"hi");
         assert!(sent.meta.is_null());
     }

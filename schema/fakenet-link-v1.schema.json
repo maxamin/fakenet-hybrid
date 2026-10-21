@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://fakenet-hybrid.local/schema/fakenet-link-v1.schema.json",
-  "title": "FakeNet hybrid link messages, version 1",
+  "title": "FakeNet hybrid link messages, version 2 (sealed messages)",
   "description": "Messages between the Rust nucleus and the Camel daemon, over WebSocket (many in flight, correlated by request_id) or one-shot HTTP POST. Additive changes keep version 1; anything else bumps it.",
   "oneOf": [
     {
@@ -35,7 +35,7 @@
       ],
       "properties": {
         "version": {
-          "const": 1
+          "const": 2
         },
         "type": {
           "const": "event"
@@ -150,7 +150,7 @@
         "auth": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$",
-          "description": "Lowercase hex HMAC-SHA256 with the shared link secret, present when the link is authenticated. Signed text: \"fakenet-link-v1 event\\n{request_id}\\n{session_id}\\n{payload}\" (payload exactly as sent, base64)."
+          "description": "Lowercase hex HMAC-SHA256 with the shared link secret, present when the link is authenticated. It must be the message's last member: the MAC covers \"fakenet-link-v2\\n\" plus the exact JSON text sent without it (every other field). The daemon also rejects events whose timestamp is more than 5 minutes off, and request_ids it has seen."
         }
       },
       "additionalProperties": true
@@ -166,7 +166,7 @@
       ],
       "properties": {
         "version": {
-          "const": 1
+          "const": 2
         },
         "type": {
           "const": "action"
@@ -203,7 +203,7 @@
         "auth": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$",
-          "description": "Lowercase hex HMAC-SHA256 with the shared link secret, present when the link is authenticated. Signed text: \"fakenet-link-v1 action\\n{request_id}\\n{session_id}\\n{response base64, or -}\\n{close}\\n{delay_ms, or -}\". The nucleus rejects unsigned or forged actions when it has a secret."
+          "description": "Lowercase hex HMAC-SHA256 with the shared link secret, present when the link is authenticated. It must be the message's last member: the MAC covers \"fakenet-link-v2\\n\" plus the exact JSON text sent without it (every other field). The nucleus rejects unsigned or forged actions when it has a secret."
         }
       },
       "additionalProperties": true
@@ -211,7 +211,7 @@
     "Hello": {
       "type": "object",
       "title": "Hello",
-      "description": "The WebSocket handshake on an authenticated link: the nucleus sends a random nonce first; the daemon answers with the same nonce and auth = HMAC over \"fakenet-link-v1 hello\\n{nonce}\". Nothing else is sent on the connection until it verifies.",
+      "description": "The WebSocket handshake on an authenticated link: the nucleus sends a random nonce first; the daemon answers with the same nonce and auth = HMAC over \"fakenet-link-v2 hello\\n{nonce}\". Nothing else is sent on the connection until it verifies; the HTTP channel sends the same hello (POST) before each event.",
       "required": [
         "version",
         "type",
@@ -219,7 +219,7 @@
       ],
       "properties": {
         "version": {
-          "const": 1
+          "const": 2
         },
         "type": {
           "const": "hello"

@@ -9,7 +9,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -187,7 +187,7 @@ pub enum ActionKind {
 /// - action: "fakenet-link-v1 action\n{request_id}\n{session_id}\n{response base64 or -}\n{close}\n{delay_ms or -}"
 /// The key is the secret file's contents, trimmed.
 pub mod auth {
-    use super::{encode_base64, Action, Event};
+
     use ring::hmac;
 
     #[derive(Clone)]
@@ -231,17 +231,35 @@ pub mod auth {
     }
 
     pub fn hello_text(nonce: &str) -> String {
-        format!("fakenet-link-v1 hello\n{nonce}")
+        format!("fakenet-link-v2 hello\n{nonce}")
     }
 
-    pub fn event_text(event: &Event) -> String {
-        format!("fakenet-link-v1 event\n{}\n{}\n{}", event.request_id, event.session_id, encode_base64(&event.payload))
+    /// Events and actions are signed whole: the MAC covers this prefix plus the exact JSON
+    /// text sent, without its `auth` member, which is appended last. Every field is covered,
+    /// and neither side has to reproduce the other's JSON formatting.
+    pub const SEALED: &str = "fakenet-link-v2\n";
+    /// `,"auth":"` + 64 hex digits + `"}`
+    const SEAL_SUFFIX: usize = 9 + 64 + 2;
+
+    /// Appends `"auth"` (the MAC of `json`) as the last member of the JSON object `json`
+    pub fn seal(secret: &Secret, json: &str) -> String {
+        let json = json.trim_end();
+        let mac = secret.sign(&format!("{SEALED}{json}"));
+        let open = json.strip_suffix('}').unwrap_or(json);
+        let separator = if open.trim_end().ends_with('{') { "" } else { "," };
+        format!("{open}{separator}\"auth\":\"{mac}\"}}")
     }
 
-    pub fn action_text(action: &Action) -> String {
-        let response = action.response.as_deref().map(encode_base64).unwrap_or_else(|| "-".into());
-        let delay = action.delay_ms.map(|d| d.to_string()).unwrap_or_else(|| "-".into());
-        format!("fakenet-link-v1 action\n{}\n{}\n{response}\n{}\n{delay}", action.request_id, action.session_id, action.close)
+    /// Checks a sealed message; true when its MAC covers everything before `auth`
+    pub fn unseal(secret: &Secret, text: &str) -> bool {
+        let text = text.trim_end();
+        let Some(split) = text.len().checked_sub(SEAL_SUFFIX) else { return false };
+        let (Some(body), Some(suffix)) = (text.get(..split), text.get(split..)) else { return false };
+        let Some(mac) = suffix.strip_prefix(",\"auth\":\"").and_then(|s| s.strip_suffix("\"}")) else { return false };
+        if mac.len() != 64 || !mac.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+            return false;
+        }
+        secret.verify(&format!("{SEALED}{body}}}"), Some(mac))
     }
 }
 
@@ -380,17 +398,28 @@ mod tests {
     #[test]
     fn signatures_match_the_shared_vectors() {
         let secret = auth::Secret::new(b"0123456789abcdef0123456789abcdef");
-        assert_eq!(secret.sign(&auth::hello_text("nonce42")), "df550b26dfd2e6b34bf9c9a0b701fc3b610783c1d198aa87a4ee8525f82e87e7");
-        let mut builder = EventBuilder::new(Protocol::Raw, Transport::Tcp, "10.0.0.5:1".parse().unwrap(), "1.2.3.4:2".parse().unwrap());
-        let mut event = builder.event(b"PING".to_vec(), Value::Null, true);
-        event.request_id = "req-1".into();
-        event.session_id = "tcp-0000000000000001".into();
-        assert_eq!(secret.sign(&auth::event_text(&event)), "3a16f8a98d04c4d3b4fe60739099b2f579949d6a0f9ab2154881a500fe373508");
-        let action = Action {
-            version: VERSION, kind: ActionKind::Action, request_id: "req-1".into(), session_id: "tcp-0000000000000001".into(),
-            response: Some(b"PONG\n".to_vec()), close: false, delay_ms: None, route: None, auth: None,
-        };
-        assert_eq!(secret.sign(&auth::action_text(&action)), "cd9cdbbe8ac362d384c0eb0e591bf95301297bf668f0fbde4547bf8244af10d3");
+        assert_eq!(secret.sign(&auth::hello_text("nonce42")), "ff24b35c3d3f7b507784ce66fb2716df6f0ba55d8d5d5b89a1d4fbd5ce7209e8");
+        let event = r#"{"version":2,"type":"event","request_id":"req-1","session_id":"tcp-0000000000000001","payload":"UElORw=="}"#;
+        let sealed = auth::seal(&secret, event);
+        assert_eq!(sealed, format!("{},\"auth\":\"0a0efe72bc4a479c99323926e3ce6910eea50038f8ff9b27237fe980726ae88e\"}}", &event[..event.len() - 1]));
+        assert!(auth::unseal(&secret, &sealed));
+        let action = r#"{"version":2,"type":"action","request_id":"req-1","session_id":"tcp-0000000000000001","response":"UE9ORwo=","close":false,"route":"c2"}"#;
+        assert!(auth::seal(&secret, action).ends_with(r#""auth":"bb6015bd0446842a83729ae706287bbc4d5cd74277646c855d20fc7f47da1b69"}"#));
+    }
+
+    #[test]
+    fn every_field_is_sealed() {
+        let secret = auth::Secret::new(b"0123456789abcdef0123456789abcdef");
+        let sealed = auth::seal(&secret, r#"{"type":"event","protocol":"http","meta":{"host":"c2.example"},"dport":80}"#);
+        assert!(auth::unseal(&secret, &sealed));
+        assert!(auth::unseal(&secret, &format!("{sealed}\n"))); // Trailing whitespace is fine
+        for (from, to) in [("http", "dns!"), ("c2.example", "c3.example"), ("80", "81")] {
+            assert!(!auth::unseal(&secret, &sealed.replacen(from, to, 1)), "{from} -> {to} went unnoticed");
+        }
+        assert!(!auth::unseal(&auth::Secret::new(b"another-secret-another-secret-xx"), &sealed));
+        assert!(!auth::unseal(&secret, r#"{"type":"event"}"#)); // Unsigned
+        assert!(!auth::unseal(&secret, ""));
+        assert_eq!(auth::seal(&secret, "{}").len(), r#"{"auth":""}"#.len() + 64);
     }
 
     const EXAMPLES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../schema/examples");
@@ -444,7 +473,7 @@ mod tests {
 
         let wrong_request = Action { request_id: "other".into(), ..action.clone() };
         assert!(wrong_request.validate_for(&event).is_err());
-        let wrong_version = Action { version: 2, ..action.clone() };
+        let wrong_version = Action { version: 1, ..action.clone() };
         assert!(wrong_version.validate_for(&event).unwrap_err().contains("version"));
         let too_slow = Action { delay_ms: Some(MAX_DELAY_MS + 1), ..action };
         assert!(too_slow.validate_for(&event).is_err());

@@ -19,11 +19,24 @@ class LinkAuthTest {
     @Test
     void signsLikeTheNucleus(@TempDir Path dir) throws Exception {
         LinkAuth auth = auth(dir);
-        assertEquals("df550b26dfd2e6b34bf9c9a0b701fc3b610783c1d198aa87a4ee8525f82e87e7", auth.sign(LinkAuth.helloText("nonce42")));
-        assertEquals("3a16f8a98d04c4d3b4fe60739099b2f579949d6a0f9ab2154881a500fe373508",
-            auth.sign(LinkAuth.eventText("req-1", "tcp-0000000000000001", "UElORw==")));
-        assertEquals("cd9cdbbe8ac362d384c0eb0e591bf95301297bf668f0fbde4547bf8244af10d3",
-            auth.sign(LinkAuth.actionText("req-1", "tcp-0000000000000001", "UE9ORwo=", false, null)));
+        assertEquals("ff24b35c3d3f7b507784ce66fb2716df6f0ba55d8d5d5b89a1d4fbd5ce7209e8", auth.sign(LinkAuth.helloText("nonce42")));
+        String event = "{\"version\":2,\"type\":\"event\",\"request_id\":\"req-1\",\"session_id\":\"tcp-0000000000000001\",\"payload\":\"UElORw==\"}";
+        String sealed = auth.seal(event);
+        assertEquals(event.substring(0, event.length() - 1) + ",\"auth\":\"0a0efe72bc4a479c99323926e3ce6910eea50038f8ff9b27237fe980726ae88e\"}", sealed);
+        assertTrue(auth.unseal(sealed));
+        String action = "{\"version\":2,\"type\":\"action\",\"request_id\":\"req-1\",\"session_id\":\"tcp-0000000000000001\",\"response\":\"UE9ORwo=\",\"close\":false,\"route\":\"c2\"}";
+        assertTrue(auth.seal(action).endsWith("\"auth\":\"bb6015bd0446842a83729ae706287bbc4d5cd74277646c855d20fc7f47da1b69\"}"));
+    }
+
+    @Test
+    void everyFieldIsSealed(@TempDir Path dir) throws Exception {
+        LinkAuth auth = auth(dir);
+        String sealed = auth.seal("{\"type\":\"event\",\"protocol\":\"http\",\"meta\":{\"host\":\"c2.example\"},\"dport\":80}");
+        assertTrue(auth.unseal(sealed));
+        assertFalse(auth.unseal(sealed.replace("c2.example", "c3.example")));
+        assertFalse(auth.unseal(sealed.replace("\"dport\":80", "\"dport\":81")));
+        assertFalse(auth.unseal("{\"type\":\"event\"}"));
+        assertTrue(LinkAuth.load("").unseal("{\"type\":\"event\"}")); // Unauthenticated: nothing to check
     }
 
     @Test

@@ -510,13 +510,99 @@ pub struct Control {
     pub limits: Arc<fakenet_listeners::Limits>,
     pub manual: Option<Arc<fakenet_listeners::manual::Manual>>,
     pub hooks: Option<Arc<fakenet_listeners::hooks::Hooks>>,
+    /// Dashboard logins
+    pub sessions: Sessions,
+}
+
+/// Dashboard sessions: a login (POSTing the link secret once) gets a random token for the
+/// cookie, so the secret itself is never in a URL, the browser history or the cookie store
+#[derive(Default)]
+pub struct Sessions(std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>);
+
+/// How long a dashboard login lasts
+const SESSION_TTL: Duration = Duration::from_secs(12 * 3600);
+/// Logins kept at once (the oldest goes first)
+const MAX_SESSIONS: usize = 64;
+
+impl Sessions {
+    fn create(&self) -> String {
+        let token = fakenet_schema::auth::random_hex(32);
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.retain(|_, created| created.elapsed() < SESSION_TTL);
+        while sessions.len() >= MAX_SESSIONS {
+            let Some(oldest) = sessions.iter().min_by_key(|(_, created)| **created).map(|(t, _)| t.clone()) else { break };
+            sessions.remove(&oldest);
+        }
+        sessions.insert(token.clone(), std::time::Instant::now());
+        token
+    }
+
+    fn valid(&self, token: &str) -> bool {
+        // 256 random bits: a lookup's timing reveals nothing usable
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).get(token).is_some_and(|created| created.elapsed() < SESSION_TTL)
+    }
+
+    fn end(&self, token: &str) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).remove(token);
+    }
+}
+
+/// The dashboard's login page (no script; posts to /dashboard/login)
+const LOGIN_HTML: &str = r#"<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FakeNet live</title><link rel="stylesheet" href="/dashboard.css"></head>
+<body><main class="login"><h1><span class="brand">FakeNet</span> live</h1>
+<form method="post" action="/dashboard/login">
+<label>Link secret (the [daemon] secret_file's contents)<br><input type="password" name="token" autocomplete="off" autofocus required></label>
+<button type="submit">Open the dashboard</button>
+</form>MESSAGE</main></body></html>
+"#;
+const LOGIN_CSP: &str = "default-src 'none'; style-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
+
+fn login_page(status: StatusCode, message: &str) -> Response<Full<Bytes>> {
+    let message = if message.is_empty() { String::new() } else { format!("<p class=\"muted\">{message}</p>") };
+    let mut response = plain_response(status, "text/html; charset=utf-8", LOGIN_HTML.replace("MESSAGE", &message));
+    response.headers_mut().insert("content-security-policy", hyper::header::HeaderValue::from_static(LOGIN_CSP));
+    response
+}
+
+/// `token=...` from a form body (percent-decoded)
+fn form_field(body: &[u8], name: &str) -> Option<String> {
+    let text = std::str::from_utf8(body).ok()?;
+    let value = text.split('&').find_map(|pair| pair.split_once('=').filter(|(k, _)| *k == name).map(|(_, v)| v))?;
+    let bytes = value.replace('+', " ").into_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match (bytes[i], bytes.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok())) {
+            (b'%', Some(byte)) => {
+                decoded.push(byte);
+                i += 3;
+            }
+            (byte, _) => {
+                decoded.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+fn session_cookie(request: &hyper::Request<hyper::body::Incoming>) -> Option<String> {
+    request
+        .headers()
+        .get_all("cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .find_map(|c| c.trim().strip_prefix("fakenet_session=").map(str::to_string))
 }
 
 const DASHBOARD_HTML: &str = include_str!("dashboard/index.html");
 const DASHBOARD_JS: &str = include_str!("dashboard/dashboard.js");
 const DASHBOARD_CSS: &str = include_str!("dashboard/dashboard.css");
 /// Everything shown comes from the sample: no inline script, nothing from elsewhere
-const DASHBOARD_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+const DASHBOARD_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
 /// The loopback control server:
 /// - `GET /health`: "ok"; with the secret, the daemon link's state and the listeners
@@ -565,6 +651,18 @@ fn plain_response(status: StatusCode, content_type: &str, body: String) -> Respo
 async fn control_post(control: &Control, request: hyper::Request<hyper::body::Incoming>) -> Response<Full<Bytes>> {
     use http_body_util::BodyExt as _;
     let error = |status: StatusCode, message: &str| plain_response(status, "application/json", json!({ "error": message }).to_string());
+    match request.uri().path() {
+        "/dashboard/login" => return dashboard_login(control, request).await,
+        "/dashboard/logout" => {
+            if let Some(token) = session_cookie(&request) {
+                control.sessions.end(&token);
+            }
+            let mut response = login_page(StatusCode::OK, "Logged out.");
+            response.headers_mut().insert("set-cookie", hyper::header::HeaderValue::from_static("fakenet_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"));
+            return response;
+        }
+        _ => {}
+    }
     if !authorized(control, &request) {
         return error(StatusCode::UNAUTHORIZED, "unauthorized");
     }
@@ -606,17 +704,11 @@ fn query_param<'a>(query: &'a str, name: &str) -> Option<&'a str> {
     query.split('&').find_map(|pair| pair.split_once('=').filter(|(k, _)| *k == name).map(|(_, v)| v))
 }
 
+/// The secret as a bearer token (scripts), or a dashboard session cookie (browsers)
 fn authorized(control: &Control, request: &hyper::Request<hyper::body::Incoming>) -> bool {
     let Some(secret) = control.secret.as_deref() else { return true };
-    let headers = request.headers();
-    let bearer = headers.get("authorization").and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "));
-    let cookie = headers
-        .get_all("cookie")
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|v| v.split(';'))
-        .find_map(|c| c.trim().strip_prefix("fakenet_token="));
-    [bearer, cookie].into_iter().flatten().any(|token| constant_time_eq(token.as_bytes(), secret.as_bytes()))
+    let bearer = request.headers().get("authorization").and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "));
+    bearer.is_some_and(|token| constant_time_eq(token.as_bytes(), secret.as_bytes())) || session_cookie(request).is_some_and(|token| control.sessions.valid(&token))
 }
 
 fn control_response(control: &Control, request: &hyper::Request<hyper::body::Incoming>) -> Response<Full<Bytes>> {
@@ -641,24 +733,10 @@ fn control_response(control: &Control, request: &hyper::Request<hyper::body::Inc
             let listeners: Vec<_> = control.listeners.iter().map(|(n, t, a)| json!({ "name": n, "transport": t, "address": a.to_string() })).collect();
             json_response(json!({ "status": "ok", "daemon": control.link.health(), "listeners": listeners, "limits": control.limits.stats() }))
         }
-        "/dashboard" => {
-            // Opening /dashboard?token=SECRET sets the cookie, then drops the token from the URL
-            if let (Some(token), Some(secret)) = (query_param(query, "token"), control.secret.as_deref()) {
-                if constant_time_eq(token.as_bytes(), secret.as_bytes()) {
-                    let mut response = respond(StatusCode::SEE_OTHER, "text/plain", String::new());
-                    response.headers_mut().insert("location", hyper::header::HeaderValue::from_static("/dashboard"));
-                    if let Ok(cookie) = hyper::header::HeaderValue::from_str(&format!("fakenet_token={secret}; HttpOnly; SameSite=Strict; Path=/")) {
-                        response.headers_mut().insert("set-cookie", cookie);
-                    }
-                    return response;
-                }
-            }
-            if authorized {
-                respond(StatusCode::OK, "text/html; charset=utf-8", DASHBOARD_HTML.to_string())
-            } else {
-                respond(StatusCode::UNAUTHORIZED, "text/plain; charset=utf-8", "Open /dashboard?token=<the link secret> (the [daemon] secret_file's contents)\n".to_string())
-            }
-        }
+        "/dashboard" if authorized => respond(StatusCode::OK, "text/html; charset=utf-8", DASHBOARD_HTML.to_string()),
+        // The secret is never taken from a URL (it would land in the browser history)
+        "/dashboard" if query_param(query, "token").is_some() => login_page(StatusCode::UNAUTHORIZED, "Secrets in the URL aren't accepted: enter it here."),
+        "/dashboard" => login_page(StatusCode::UNAUTHORIZED, ""),
         "/dashboard.js" => respond(StatusCode::OK, "text/javascript; charset=utf-8", DASHBOARD_JS.to_string()),
         "/dashboard.css" => respond(StatusCode::OK, "text/css; charset=utf-8", DASHBOARD_CSS.to_string()),
         "/api/records" | "/api/summary" | "/api/manual" | "/api/paused" if !authorized => respond(StatusCode::UNAUTHORIZED, "application/json", r#"{"error":"unauthorized"}"#.into()),
@@ -694,6 +772,34 @@ fn control_response(control: &Control, request: &hyper::Request<hyper::body::Inc
         }
         _ => respond(StatusCode::NOT_FOUND, "application/json", r#"{"error":"not found"}"#.into()),
     }
+}
+
+/// POST /dashboard/login (a form with the link secret): a session cookie, then the dashboard
+async fn dashboard_login(control: &Control, request: hyper::Request<hyper::body::Incoming>) -> Response<Full<Bytes>> {
+    use http_body_util::BodyExt as _;
+    let Some(secret) = control.secret.as_deref() else {
+        return redirect("/dashboard"); // No secret configured: nothing to log in to
+    };
+    let body = match http_body_util::Limited::new(request.into_body(), 4096).collect().await {
+        Ok(body) => body.to_bytes(),
+        Err(_) => return login_page(StatusCode::PAYLOAD_TOO_LARGE, "Too long."),
+    };
+    match form_field(&body, "token") {
+        Some(token) if constant_time_eq(token.trim().as_bytes(), secret.as_bytes()) => {
+            let mut response = redirect("/dashboard");
+            if let Ok(cookie) = hyper::header::HeaderValue::from_str(&format!("fakenet_session={}; HttpOnly; SameSite=Strict; Path=/", control.sessions.create())) {
+                response.headers_mut().insert("set-cookie", cookie);
+            }
+            response
+        }
+        _ => login_page(StatusCode::UNAUTHORIZED, "That isn't the link secret."),
+    }
+}
+
+fn redirect(location: &'static str) -> Response<Full<Bytes>> {
+    let mut response = plain_response(StatusCode::SEE_OTHER, "text/plain", String::new());
+    response.headers_mut().insert("location", hyper::header::HeaderValue::from_static(location));
+    response
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {

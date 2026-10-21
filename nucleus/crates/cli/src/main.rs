@@ -90,6 +90,10 @@ struct Args {
     /// fakenet.link.secret-file), and exit
     #[arg(long, value_name = "PATH")]
     generate_secret: Option<PathBuf>,
+    /// Run the link to the daemon without a shared secret (any local process can then read
+    /// the events or pose as the daemon); without it the nucleus refuses to start
+    #[arg(long)]
+    insecure_link: bool,
     /// Windows, internal: wait for process PID to exit, then block outbound traffic (the
     /// guard a diverting nucleus starts for itself)
     #[arg(long, value_name = "PID", hide = true)]
@@ -178,6 +182,8 @@ async fn main() -> anyhow::Result<()> {
     if let Some(path) = &args.generate_secret {
         fakenet_cli::generate_secret(path)?;
         println!("Wrote a new link secret to {}", path.display());
+        let absolute = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+        println!("Use it on both sides:\n  nucleus config, [daemon]:  secret_file = \"{}\"\n  daemon:                    -Dfakenet.link.secret-file={}", absolute.display(), absolute.display());
         return Ok(());
     }
     if let Some(pid) = args.block_after_exit {
@@ -210,8 +216,15 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     let secret = config.secret()?;
-    if secret.is_none() {
-        tracing::warn!("No [daemon] secret_file: the link to the daemon is unauthenticated");
+    let link_configured = !config.daemon.websocket_url.is_empty() || !config.daemon.http_url.is_empty();
+    if secret.is_none() && link_configured {
+        anyhow::ensure!(
+            args.insecure_link,
+            "No [daemon] secret_file: any local process could read the events or pose as the daemon. Create a secret with \
+             `fakenet-nucleus --generate-secret PATH`, set secret_file to it (and the daemon's fakenet.link.secret-file), \
+             or pass --insecure-link"
+        );
+        tracing::warn!("--insecure-link: the link to the daemon is unauthenticated");
     }
     if args.check {
         config.known_fingerprints()?;
@@ -315,6 +328,7 @@ async fn main() -> anyhow::Result<()> {
         limits,
         manual: manual.clone(),
         hooks: hooks.clone(),
+        sessions: Default::default(),
     });
     tracing::info!("dashboard: http://{}/dashboard{}", config.nucleus.health, if secret.is_some() { "?token=<the link secret>" } else { "" });
     let health_task = tokio::spawn(serve_control(health, control));

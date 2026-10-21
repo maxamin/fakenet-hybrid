@@ -10,12 +10,12 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 
 /**
- * The link's shared-secret authentication (same texts as the nucleus's
- * fakenet_schema::auth): lowercase hex HMAC-SHA256 over
+ * The link's shared-secret authentication (as the nucleus's fakenet_schema::auth):
+ * lowercase hex HMAC-SHA256.
  * <ul>
- * <li>hello: "fakenet-link-v1 hello\n{nonce}"</li>
- * <li>event: "fakenet-link-v1 event\n{request_id}\n{session_id}\n{payload base64}"</li>
- * <li>action: "fakenet-link-v1 action\n{request_id}\n{session_id}\n{response base64 or -}\n{close}\n{delay_ms or -}"</li>
+ * <li>hello: over "fakenet-link-v2 hello\n{nonce}"</li>
+ * <li>events and actions are sealed whole: {@code auth} is the message's last member, and
+ * covers "fakenet-link-v2\n" plus the exact JSON text before it (every field)</li>
  * </ul>
  * Without a secret file the link is unauthenticated (signatures are neither checked nor sent).
  */
@@ -67,16 +67,42 @@ public final class LinkAuth {
     }
 
     public static String helloText(String nonce) {
-        return "fakenet-link-v1 hello\n" + nonce;
+        return "fakenet-link-v2 hello\n" + nonce;
     }
 
-    public static String eventText(String requestId, String sessionId, String payloadBase64) {
-        return "fakenet-link-v1 event\n" + requestId + "\n" + sessionId + "\n" + payloadBase64;
+    static final String SEALED = "fakenet-link-v2\n";
+    /** {@code ,"auth":"} + 64 hex digits + {@code "}} */
+    private static final int SEAL_SUFFIX = 9 + 64 + 2;
+
+    /** The JSON object {@code json} with "auth" (its MAC) appended last; unchanged when unauthenticated */
+    public String seal(String json) {
+        if (key == null) {
+            return json;
+        }
+        String trimmed = json.stripTrailing();
+        String open = trimmed.endsWith("}") ? trimmed.substring(0, trimmed.length() - 1) : trimmed;
+        String separator = open.stripTrailing().endsWith("{") ? "" : ",";
+        return open + separator + "\"auth\":\"" + sign(SEALED + trimmed) + "\"}";
     }
 
-    public static String actionText(String requestId, String sessionId, String responseBase64, boolean close, Long delayMs) {
-        return "fakenet-link-v1 action\n" + requestId + "\n" + sessionId + "\n"
-            + (responseBase64 == null ? "-" : responseBase64) + "\n" + close + "\n"
-            + (delayMs == null ? "-" : delayMs.toString());
+    /** True when unauthenticated, or when the sealed message's MAC covers everything before auth */
+    public boolean unseal(String text) {
+        if (key == null) {
+            return true;
+        }
+        String trimmed = text.stripTrailing();
+        if (trimmed.length() < SEAL_SUFFIX) {
+            return false;
+        }
+        int split = trimmed.length() - SEAL_SUFFIX;
+        String suffix = trimmed.substring(split);
+        if (!suffix.startsWith(",\"auth\":\"") || !suffix.endsWith("\"}")) {
+            return false;
+        }
+        String mac = suffix.substring(9, 9 + 64);
+        if (!mac.chars().allMatch(c -> (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+            return false;
+        }
+        return verify(SEALED + trimmed.substring(0, split) + "}", mac);
     }
 }

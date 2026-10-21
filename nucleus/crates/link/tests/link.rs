@@ -82,9 +82,14 @@ async fn http_daemon(calls: Arc<AtomicUsize>) -> SocketAddr {
                             let read = stream.read(&mut buffer).await.unwrap();
                             request.extend_from_slice(&buffer[..read]);
                         }
-                        let event: Event = serde_json::from_slice(&request[end + 4..]).unwrap();
-                        calls.fetch_add(1, Ordering::SeqCst);
-                        let body = serde_json::to_string(&answer(&event, b"via http")).unwrap();
+                        // Not the daemon: it can't sign a hello, so it answers anything else "{}"
+                        let body = match serde_json::from_slice::<Event>(&request[end + 4..]) {
+                            Ok(event) => {
+                                calls.fetch_add(1, Ordering::SeqCst);
+                                serde_json::to_string(&answer(&event, b"via http")).unwrap()
+                            }
+                            Err(_) => "{}".to_string(),
+                        };
                         let reply = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                         stream.write_all(reply.as_bytes()).await.unwrap();
                         return;
@@ -233,6 +238,11 @@ async fn rejects_actions_for_the_wrong_request() {
 /// A WebSocket daemon that answers the handshake with `key` (None: skips it) and signs
 /// its actions with `key`
 async fn authenticating_daemon(key: Option<&'static [u8]>) -> SocketAddr {
+    authenticating_daemon_with(key, |sealed| sealed).await
+}
+
+/// The same, with `tamper` applied to each sealed action before it's sent
+async fn authenticating_daemon_with(key: Option<&'static [u8]>, tamper: fn(String) -> String) -> SocketAddr {
     use fakenet_schema::auth::{self, Secret};
     use fakenet_schema::Hello;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -251,9 +261,17 @@ async fn authenticating_daemon(key: Option<&'static [u8]>) -> SocketAddr {
                         continue;
                     }
                     let event: Event = serde_json::from_str(text.as_str()).unwrap();
+                    if let Some(secret) = &secret {
+                        assert!(auth::unseal(secret, text.as_str()), "the nucleus sent an event that isn't sealed");
+                    }
                     let mut action = answer(&event, b"signed");
-                    action.auth = secret.as_ref().map(|s| s.sign(&auth::action_text(&action)));
-                    socket.send(Message::text(serde_json::to_string(&action).unwrap())).await.unwrap();
+                    action.route = Some("signed".into());
+                    let json = serde_json::to_string(&action).unwrap();
+                    let sent = match &secret {
+                        Some(secret) => tamper(auth::seal(secret, &json)),
+                        None => json,
+                    };
+                    socket.send(Message::text(sent)).await.unwrap();
                 }
             });
         }
@@ -289,29 +307,27 @@ async fn rejects_unsigned_actions() {
     let open = Link::start(config(Some(address), None, 500));
     until_connected(&open).await;
     assert!(matches!(open.decide(&event()).await, Decision::Action(_)));
-    // ...but with a secret they're rejected (HTTP channel: no handshake to fail first)
-
-    let strict = Link::start(LinkConfig { secret: Some(fakenet_schema::auth::Secret::new(b"lab-secret")), ..config(None, Some(http_daemon_unsigned().await), 500) });
+    // ...but with a secret, an HTTP server that can't sign the hello gets no event at all
+    // (SEC-05: whoever took the port while the daemon was down)
+    let calls = Arc::new(AtomicUsize::new(0));
+    let impostor = http_daemon(calls.clone()).await;
+    let strict = Link::start(LinkConfig { secret: Some(fakenet_schema::auth::Secret::new(b"lab-secret")), ..config(None, Some(impostor), 500) });
     match strict.decide(&event()).await {
-        Decision::Fallback(Fallback::Invalid(reason)) => assert!(reason.contains("unsigned"), "{reason}"),
+        Decision::Fallback(Fallback::Invalid(reason)) => assert!(reason.contains("hello"), "{reason}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "the event went to an unauthenticated server");
+}
+
+#[tokio::test]
+async fn a_tampered_action_is_rejected() {
+    // The daemon signs, then a field the old scheme didn't cover (route) changes in transit
+    let address = authenticating_daemon_with(Some(b"lab-secret"), |sealed| sealed.replacen("\"route\":\"signed\"", "\"route\":\"forged\"", 1)).await;
+    let link = Link::start(authenticated(address));
+    until_connected(&link).await;
+    match link.decide(&event()).await {
+        Decision::Fallback(Fallback::Invalid(reason)) => assert!(reason.contains("forged"), "{reason}"),
         other => panic!("{other:?}"),
     }
 }
 
-/// An HTTP daemon that answers every event with an unsigned action
-async fn http_daemon_unsigned() -> SocketAddr {
-    http_daemon(Arc::new(AtomicUsize::new(0))).await
-}
-
-#[test]
-fn signatures_cover_the_response() {
-    use fakenet_schema::auth::{action_text, Secret};
-    let secret = Secret::new(b"k");
-    let mut action = answer(&event(), b"one");
-    let signature = secret.sign(&action_text(&action));
-    assert!(secret.verify(&action_text(&action), Some(&signature)));
-    action.response = Some(b"two".to_vec());
-    assert!(!secret.verify(&action_text(&action), Some(&signature)));
-    assert!(!secret.verify(&action_text(&action), Some("zz")));
-    assert!(!secret.verify(&action_text(&action), None));
-}

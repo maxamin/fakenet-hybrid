@@ -53,6 +53,13 @@
             ref: eventIn
         - choice:
             when:
+              # The handshake the nucleus sends before each event: the body is the
+              # signed reply
+              - simple: "${header.FakenetKind} == 'hello'"
+                steps:
+                  - log:
+                      loggingLevel: DEBUG
+                      message: "HTTP handshake answered"
               - simple: "${header.FakenetKind} != 'event'"
                 steps:
                   - log:

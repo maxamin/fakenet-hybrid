@@ -26,15 +26,17 @@ class LinkProcessorsTest {
     }
 
     private static String event(LinkAuth auth, String payloadBase64, boolean signed) throws Exception {
+        return event(auth, payloadBase64, signed, "req-1", java.time.OffsetDateTime.now().toString());
+    }
+
+    private static String event(LinkAuth auth, String payloadBase64, boolean signed, String requestId, String timestamp) throws Exception {
         Map<String, Object> event = new java.util.LinkedHashMap<>(Map.of(
-            "version", 1, "type", "event", "request_id", "req-1", "session_id", "tcp-0000000000000001", "seq", 1,
+            "version", 2, "type", "event", "request_id", requestId, "session_id", "tcp-0000000000000001", "seq", 1,
             "protocol", "http", "transport", "tcp", "src", "10.0.0.5:1234", "dst", "1.2.3.4:80"));
-        event.putAll(Map.of("dport", 80, "timestamp", "t", "payload", payloadBase64, "expects_reply", true,
+        event.putAll(Map.of("dport", 80, "timestamp", timestamp, "payload", payloadBase64, "expects_reply", true,
             "meta", Map.of("path", "/gate.php", "host", "c2.example")));
-        if (signed) {
-            event.put("auth", auth.sign(LinkAuth.eventText("req-1", "tcp-0000000000000001", payloadBase64)));
-        }
-        return JSON.writeValueAsString(event);
+        String json = JSON.writeValueAsString(event);
+        return signed ? auth.seal(json) : json;
     }
 
     @Test
@@ -42,7 +44,7 @@ class LinkProcessorsTest {
         LinkAuth auth = LinkAuthTest.auth(dir);
         EventIn in = new EventIn(auth);
 
-        Exchange hello = exchange("{\"version\":1,\"type\":\"hello\",\"nonce\":\"abc\"}");
+        Exchange hello = exchange("{\"version\":2,\"type\":\"hello\",\"nonce\":\"abc\"}");
         in.process(hello);
         assertEquals("hello", hello.getMessage().getHeader(KIND));
         Map<String, Object> reply = JSON.readValue(hello.getMessage().getBody(String.class), new TypeReference<>() {});
@@ -57,6 +59,28 @@ class LinkProcessorsTest {
         Exchange garbage = exchange("not json");
         in.process(garbage);
         assertEquals("rejected", garbage.getMessage().getHeader(KIND));
+
+        // A signed event whose protocol was changed in transit
+        Exchange tampered = exchange(event(auth, payload, true).replace("\"protocol\":\"http\"", "\"protocol\":\"dns\""));
+        in.process(tampered);
+        assertEquals("unsigned or forged event", tampered.getMessage().getHeader(REJECTED_REASON));
+    }
+
+    @Test
+    void refusesReplaysAndStaleEvents(@TempDir Path dir) throws Exception {
+        LinkAuth auth = LinkAuthTest.auth(dir);
+        EventIn in = new EventIn(auth);
+        String payload = Base64.getEncoder().encodeToString("PING".getBytes());
+        String signed = event(auth, payload, true, "req-replay", java.time.OffsetDateTime.now().toString());
+        Exchange first = exchange(signed);
+        in.process(first);
+        assertEquals("event", first.getMessage().getHeader(KIND));
+        Exchange again = exchange(signed);
+        in.process(again);
+        assertEquals("replayed request_id", again.getMessage().getHeader(REJECTED_REASON));
+        Exchange old = exchange(event(auth, payload, true, "req-old", java.time.OffsetDateTime.now().minusHours(1).toString()));
+        in.process(old);
+        assertEquals("stale timestamp", old.getMessage().getHeader(REJECTED_REASON));
     }
 
     @Test
@@ -79,6 +103,8 @@ class LinkProcessorsTest {
         Map<String, Object> action = JSON.readValue(message.getBody(String.class), new TypeReference<>() {});
         assertEquals("UE9ORwo=", action.get("response"));
         assertEquals(true, action.get("close"));
-        assertEquals(auth.sign(LinkAuth.actionText("req-1", "tcp-0000000000000001", "UE9ORwo=", true, null)), action.get("auth"));
+        assertTrue(auth.unseal(message.getBody(String.class)));
+        assertEquals(64, ((String) action.get("auth")).length());
+        assertFalse(auth.unseal(message.getBody(String.class).replace("\"route\":\"default\"", "\"route\":\"forged\"")));
     }
 }
