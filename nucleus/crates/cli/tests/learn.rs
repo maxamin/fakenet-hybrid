@@ -30,9 +30,26 @@ fn learns_a_model_from_its_own_capture() {
     assert_eq!(summary["protocols"]["http"]["top"][0]["key"], "GET /beacon/{n}");
     assert_eq!(summary["protocols"]["http"]["top"][0]["count"], 2);
     // The pack answers like the server did
-    let model = fakenet_model::Model::load(&[pack]).unwrap();
+    let model = fakenet_model::Model::load(std::slice::from_ref(&pack)).unwrap();
     let sampled = model.answer("http", b"GET /beacon/1 HTTP/1.1\r\n\r\n", &mut fakenet_model::Rng::new(1)).unwrap();
     assert!(sampled.bytes.ends_with(b"sleep 60"));
+    // --merge adds to the pack (written back to it), and --transform keys decoded requests
+    let more = work.join("more");
+    {
+        let capture = fakenet_capture::Capture::open(&more).unwrap();
+        let flow = capture.tcp_flow("10.0.0.5:40001".parse().unwrap(), "198.51.100.7:4444".parse().unwrap());
+        let encoded: Vec<u8> = b"sleep 30".iter().map(|b| b ^ 0x5a).collect();
+        flow.client_data(&encoded);
+        flow.server_data(b"\x01ok");
+        drop(flow);
+        capture.flush();
+    }
+    let merged = Command::new(nucleus).arg("--learn").arg(&more).args(["--transform", "xor:5a", "--only", ":4444", "--merge"]).arg(&pack).output().unwrap();
+    assert!(merged.status.success(), "{}", String::from_utf8_lossy(&merged.stderr));
+    assert!(String::from_utf8_lossy(&merged.stdout).contains("Learned 1 exchanges"), "{}", String::from_utf8_lossy(&merged.stdout));
+    let pack_now = fakenet_model::Pack::load(&pack).unwrap();
+    assert_eq!(pack_now.protocols["http"].exchanges, 2);
+    assert_eq!(pack_now.protocols["raw"].keys["text:SLEEP"].answers[0].bytes, b"\x01ok");
     // Nothing to learn from: a clear error
     let empty = Command::new(nucleus).arg("--learn").arg(work.join("nowhere-empty")).output().unwrap();
     assert!(!empty.status.success());

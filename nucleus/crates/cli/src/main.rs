@@ -81,10 +81,10 @@ struct Args {
     decode: Option<PathBuf>,
     /// A --decode step, applied in order: base64, hex, xor:KEY, rc4:KEY (KEY hex or text:...),
     /// skip:N
-    #[arg(long = "transform", value_name = "STEP", requires = "decode")]
+    #[arg(long = "transform", value_name = "STEP")]
     transforms: Vec<String>,
     /// With --decode: only the destinations containing this (e.g. ":4444")
-    #[arg(long = "only", value_name = "TEXT", requires = "decode")]
+    #[arg(long = "only", value_name = "TEXT")]
     only: Option<String>,
     /// Write a new link secret to PATH (for `[daemon] secret_file` and the daemon's
     /// fakenet.link.secret-file), and exit
@@ -94,6 +94,9 @@ struct Args {
     /// wire*.pcap), written to --output (default model.json) for a `model` responder
     #[arg(long, num_args = 1.., value_name = "PCAP")]
     learn: Vec<PathBuf>,
+    /// With --learn: add to this existing pack (and write there unless --output is given)
+    #[arg(long, value_name = "PACK", requires = "learn")]
+    merge: Option<PathBuf>,
     /// Summarise a model pack (protocols, exchanges, most frequent requests), and exit
     #[arg(long, value_name = "PACK")]
     model_info: Option<PathBuf>,
@@ -152,11 +155,32 @@ async fn main() -> anyhow::Result<()> {
     if !args.learn.is_empty() {
         let files = fakenet_cli::learn_inputs(&args.learn)?;
         anyhow::ensure!(!files.is_empty(), "no pcap files found in {:?}", args.learn);
-        let pack = fakenet_model::learn(&files)?;
-        let output = args.output.clone().unwrap_or_else(|| PathBuf::from("model.json"));
+        // With --transform, requests (of --only's "<protocol> :<port>" matches) are keyed by
+        // their decoded content; a model responder then needs the same key_transforms
+        let transforms = args.transforms.iter().map(|t| fakenet_model::transform::parse_transform(t)).collect::<anyhow::Result<Vec<_>>>()?;
+        let only = args.only.clone();
+        let decode = move |protocol: &str, port: u16, request: &[u8]| -> Option<Vec<u8>> {
+            if transforms.is_empty() || only.as_deref().is_some_and(|o| !format!("{protocol} :{port}").contains(o)) {
+                return None;
+            }
+            fakenet_model::transform::apply(&transforms, request).ok()
+        };
+        let mut pack = fakenet_model::learn_with(&files, &decode)?;
+        let mut learned = None;
+        if let Some(base) = &args.merge {
+            learned = Some(pack.protocols.values().map(|p| p.exchanges).sum::<u64>());
+            let mut merged = fakenet_model::Pack::load(base)?;
+            merged.merge(&pack);
+            merged.created = pack.created.clone();
+            pack = merged;
+        }
+        let output = args.output.clone().or_else(|| args.merge.clone()).unwrap_or_else(|| PathBuf::from("model.json"));
         std::fs::write(&output, serde_json::to_string_pretty(&pack)?).with_context(|| format!("writing {}", output.display()))?;
         let exchanges: u64 = pack.protocols.values().map(|p| p.exchanges).sum();
-        println!("Learned {exchanges} exchanges ({} protocols) from {} files into {}", pack.protocols.len(), files.len(), output.display());
+        match learned {
+            Some(new) => println!("Learned {new} exchanges from {} files; {} now holds {exchanges} ({} protocols)", files.len(), output.display(), pack.protocols.len()),
+            None => println!("Learned {exchanges} exchanges ({} protocols) from {} files into {}", pack.protocols.len(), files.len(), output.display()),
+        }
         return Ok(());
     }
     if let Some(path) = &args.model_info {
@@ -183,6 +207,7 @@ async fn main() -> anyhow::Result<()> {
         println!("{}", serde_json::to_string_pretty(&found)?);
         return Ok(());
     }
+    anyhow::ensure!(args.transforms.is_empty() && args.only.is_none() || args.decode.is_some() || !args.learn.is_empty(), "--transform and --only go with --decode or --learn");
     if let Some(events) = &args.decode {
         anyhow::ensure!(!args.transforms.is_empty(), "--decode needs at least one --transform (base64, hex, xor:KEY, rc4:KEY, skip:N)");
         let transforms = args.transforms.iter().map(|t| fakenet_cli::infer::parse_transform(t)).collect::<anyhow::Result<Vec<_>>>()?;

@@ -25,6 +25,7 @@ classDiagram
         +timeout_ms: u64
         +rate: f64
         +outcomes: Outcomes
+        +key_transforms: Vec~String~
         +filter: EventFilter
     }
     class ModelResponder {
@@ -50,6 +51,7 @@ classDiagram
         <<trait>>
         +protocol() str
         +keys(request) Vec~String~
+        +keys_for_event(payload, meta) Vec~String~
         +stored_answer(response) Option~bytes~
         +is_failure(answer) bool
     }
@@ -79,12 +81,15 @@ classDiagram
     class Model {
         +load(paths) Model
         +answer_with(protocol, request, rng, successful_only) Option~Sampled~
+        +answer_event(protocol, payload, meta, rng, successful_only) Option~Sampled~
     }
     Analyzer <|.. Http
     Analyzer <|.. Dns
     Analyzer <|.. Lines
     Analyzer <|.. Redis
     Analyzer <|.. Generic
+    Analyzer <|.. Mqtt
+    Analyzer <|.. Coap
     Pack *-- ProtocolModel
     ProtocolModel *-- KeyModel
     KeyModel *-- Answer
@@ -111,7 +116,7 @@ sequenceDiagram
     end
 ```
 
-## Transforms (nucleus/crates/cli/src/infer.rs)
+## Transforms (nucleus/crates/model/src/transform.rs; used by infer.rs, --learn, responders)
 
 ```mermaid
 classDiagram

@@ -5,7 +5,7 @@ code that already fits the project's interfaces:
     scripts/scaffold.py plugin NAME      plugins/NAME.py: a responder plugin (any protocol)
     scripts/scaffold.py responder NAME   nucleus/crates/listeners/src/responders/NAME.rs: a Rust responder
     scripts/scaffold.py analyzer NAME    a protocol analyser for fakenet-model (printed: add it to analyze.rs)
-    scripts/scaffold.py transform NAME   a --decode transform (printed: add it to infer.rs)
+    scripts/scaffold.py transform NAME   a decoding step (printed: add it to model/src/transform.rs)
 
 Never overwrites a file. NAME: letters, digits and underscores. Prints what to do next.
 """
@@ -153,12 +153,13 @@ impl Analyzer for {klass} {{
 }}
 '''
 
-TRANSFORM = '''// {title}: a --decode step. In nucleus/crates/cli/src/infer.rs:
+TRANSFORM = '''// {title}: a decoding step (--decode, --learn --transform, key_transforms). In
+// nucleus/crates/model/src/transform.rs:
 // 1. add a variant to `enum Transform`, e.g. `{klass}(Vec<u8>)`;
 // 2. parse it in `parse_transform` ("{name}:KEY");
 // 3. apply it in `apply`:
 //        Transform::{klass}(key) => {name}_decode(key, &data)?,
-// 4. test it with a known vector in infer.rs's tests, and list it in docs/usage/reverse-engineering.md.
+// 4. test it with a known vector in transform.rs's tests, and list it in docs/usage/reverse-engineering.md.
 
 fn {name}_decode(key: &[u8], data: &[u8]) -> anyhow::Result<Vec<u8>> {{
     let _ = key;

@@ -13,6 +13,7 @@
 pub mod analyze;
 pub mod flows;
 pub mod pcap;
+pub mod transform;
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -102,6 +103,13 @@ impl Default for Pack {
 impl Pack {
     /// Adds one request/answer pair of `protocol`
     pub fn add(&mut self, protocol: &str, request: &[u8], response: &[u8]) {
+        self.add_keyed(protocol, request, response);
+    }
+
+    /// `add`, with the key taken from `key_source` (e.g. the request decoded: see
+    /// `learn_with`); the answer is stored as sent
+    pub fn add_keyed(&mut self, protocol: &str, key_source: &[u8], response: &[u8]) {
+        let request = key_source;
         let analyzer = analyze::for_protocol(protocol);
         let model = self.protocols.entry(analyzer.protocol().to_string()).or_default();
         model.exchanges += 1;
@@ -167,8 +175,14 @@ impl Pack {
     }
 }
 
-/// Learns a pack from pcap files
+/// Learns a pack from pcap or pcapng files
 pub fn learn(paths: &[std::path::PathBuf]) -> Result<Pack> {
+    learn_with(paths, &|_, _, _| None)
+}
+
+/// `learn`, keying each request by `decode(protocol, server_port, request)` when it returns
+/// bytes (an encoded C2 message, decoded); answers are stored as sent
+pub fn learn_with(paths: &[std::path::PathBuf], decode: &dyn Fn(&str, u16, &[u8]) -> Option<Vec<u8>>) -> Result<Pack> {
     let mut pack = Pack::default();
     for path in paths {
         let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
@@ -179,7 +193,10 @@ pub fn learn(paths: &[std::path::PathBuf]) -> Result<Pack> {
                 pcap::Transport::Udp => fakenet_schema::Transport::Udp,
             };
             let protocol = analyze::identify(transport, exchange.server_port, &exchange.first_client_bytes);
-            pack.add(protocol, &exchange.request, &exchange.response);
+            match decode(protocol, exchange.server_port, &exchange.request) {
+                Some(decoded) => pack.add_keyed(protocol, &decoded, &exchange.response),
+                None => pack.add(protocol, &exchange.request, &exchange.response),
+            }
         }
         pack.sources.push(path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
     }
@@ -257,10 +274,19 @@ impl Model {
     /// `answer`, but with `successful_only`, failures (not found, server errors...) are left
     /// out, so a mock keeps the sample going
     pub fn answer_with(&self, protocol: &str, request: &[u8], rng: &mut Rng, successful_only: bool) -> Option<Sampled> {
+        self.answer_keys(protocol, analyze::for_protocol(protocol).keys(request), rng, successful_only)
+    }
+
+    /// For a live event: keys from its payload and `meta` (`Analyzer::keys_for_event`)
+    pub fn answer_event(&self, protocol: &str, payload: &[u8], meta: &serde_json::Value, rng: &mut Rng, successful_only: bool) -> Option<Sampled> {
+        self.answer_keys(protocol, analyze::for_protocol(protocol).keys_for_event(payload, meta), rng, successful_only)
+    }
+
+    fn answer_keys(&self, protocol: &str, keys: Vec<String>, rng: &mut Rng, successful_only: bool) -> Option<Sampled> {
         let model = self.pack.protocols.get(protocol)?;
         let analyzer = analyze::for_protocol(protocol);
         let keep = |answer: &&Answer| !successful_only || !analyzer.is_failure(&answer.bytes);
-        for key in analyzer.keys(request) {
+        for key in keys {
             let candidates: Vec<&Answer> = match key.as_str() {
                 // Everything the protocol answered (but not greetings, unless asked)
                 "*" => model.keys.iter().filter(|(k, _)| k.as_str() != analyze::GREETING).flat_map(|(_, m)| m.answers.iter()).collect(),

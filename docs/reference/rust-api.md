@@ -163,8 +163,9 @@ Protocol modules (each `handle` serves one session; see {doc}`protocols`):
 | `flows::{exchanges, Exchange}` | TCP reassembly per direction, UDP flows, request/answer pairs (bounded) |
 | `analyze::{Analyzer, analyzers, for_protocol, identify, GREETING}` | Per-protocol keys, stored answers, failures |
 | `Pack::{add, merge, load, summary}`, `ProtocolModel`, `KeyModel`, `Answer` | The model pack format |
-| `learn(paths)` | pcaps -> `Pack` |
-| `Model::{new, load, answer, answer_with, knows}`, `Sampled`, `Rng` | Weighted sampling of answers |
+| `learn(paths)`, `learn_with(paths, decode)` | pcap/pcapng files -> `Pack` (optionally keying requests by their decoded content) |
+| `transform::{Transform, parse_transform, apply}` | Decoding steps shared by `--decode`, `--learn` and `key_transforms` |
+| `Model::{new, load, answer, answer_with, answer_event, knows}`, `Sampled`, `Rng` | Weighted sampling of answers (`answer_event`: keys from a live event's payload and meta) |
 
 ## `cli` (`cli/src/`)
 
@@ -183,4 +184,4 @@ Protocol modules (each `handle` serves one session; see {doc}`protocols`):
 | `learn_inputs(paths)` | The pcaps `--learn` reads from files and folders |
 | `read_records(files)`, `read_records_with(files, max_payload)` | Parse event files line by line, optionally cutting payloads |
 | `diff::{capture_files, behaviour, compare, render}` | `--diff` |
-| `infer::{group_messages, analyse, dissector, infer, Transform, parse_transform, apply, decode}` | `--infer`, `--decode` |
+| `infer::{group_messages, analyse, dissector, infer, decode}` (and the model's transforms, re-exported) | `--infer`, `--decode` |

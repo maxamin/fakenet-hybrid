@@ -43,9 +43,10 @@ Logging uses `RUST_LOG` (`tracing-subscriber` env filter; default `info`), for e
 | `--diff A B` | | Compare two runs (capture folders or `events.jsonl` files): destinations, DNS names, HTTP requests, commands, raw messages, credentials, TLS/SSH clients, saved files and detections only one run has, plus record counts. JSON to `-o` if given. See [reverse engineering](reverse-engineering.md) |
 | `--infer EVENTS` | | Per destination, the structure of unparsed (`raw`) client messages: magic, constant bytes, length field, per-session counter, encodings, single-byte XOR key. With `-o DIR`, a Wireshark Lua dissector per destination |
 | `--decode EVENTS` | | Run client payloads through `--transform` steps into `-o DIR` (default `decoded/` next to the events), with `index.json` |
-| `--transform STEP` | | `--decode` step, applied in order: `base64`, `hex`, `xor:KEY`, `rc4:KEY` (KEY as hex, or `text:...`), `skip:N` |
-| `--only TEXT` | | `--decode`: only destinations containing TEXT (e.g. `:4444`) |
-| `--learn PCAP...` | | Learn a model pack from pcap files or capture folders (their `traffic*.pcap`, `wire*.pcap`, recursively) into `-o` (default `model.json`). See [learned models](learning-and-responders.md) |
+| `--transform STEP` | | `--decode` and `--learn` step, applied in order: `base64`, `hex`, `xor:KEY`, `rc4:KEY` (KEY as hex, or `text:...`), `skip:N` |
+| `--only TEXT` | | `--decode`: only destinations containing TEXT (e.g. `:4444`); `--learn`: only flows whose `"<protocol> :<port>"` contains it |
+| `--learn PCAP...` | | Learn a model pack from pcap or pcapng files, or folders (their `.pcap`, `.pcapng`, `.cap` files, recursively), into `-o` (default `model.json`). With `--transform` (and `--only`), requests are keyed by their decoded content. See [learned models](learning-and-responders.md) |
+| `--merge PACK` | | `--learn` only: add to this pack, written back to it unless `-o` is given |
 | `--model-info PACK` | | Summarise a model pack: protocols, exchanges, most frequent request keys |
 | `--all-protocols` | | `--infer`, `--decode`: every protocol, not only `raw` |
 | `-o, --output PATH` | | Output for the modes above |

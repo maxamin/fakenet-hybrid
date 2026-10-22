@@ -30,6 +30,16 @@ fuzz_target!(|data: &[u8]| {
             let _ = analyzer.is_failure(&answer);
         }
     }
+    // Through every transform
+    for step in ["base64", "hex", "xor:5a", "rc4:text:key", "skip:3"] {
+        let transform = fakenet_model::transform::parse_transform(step).expect("valid step");
+        let _ = fakenet_model::transform::apply(&[transform], data);
+    }
+    // As a live event to every analyser (meta from the input, when it's JSON)
+    let meta = serde_json::from_slice::<serde_json::Value>(data).unwrap_or_default();
+    for analyzer in fakenet_model::analyze::analyzers() {
+        let _ = analyzer.keys_for_event(data, &meta);
+    }
     // As a model pack
     if let Ok(pack) = serde_json::from_slice::<fakenet_model::Pack>(data) {
         let _ = pack.summary();

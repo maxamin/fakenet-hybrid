@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use anyhow::{bail, Context as _};
+use anyhow::Context as _;
 use serde_json::{json, Value};
 
 /// One client message: its session, its order in the session, and its bytes
@@ -325,79 +325,7 @@ pub fn infer(records: &[Value], all: bool, out: Option<&Path>) -> anyhow::Result
     Ok(Value::Object(results))
 }
 
-/// One step of `--decode`
-#[derive(Debug, Clone, PartialEq)]
-pub enum Transform {
-    Base64,
-    Hex,
-    Xor(Vec<u8>),
-    Rc4(Vec<u8>),
-    /// Drop a header of N bytes
-    Skip(usize),
-}
-
-/// `base64`, `hex`, `xor:KEY`, `rc4:KEY` (KEY as hex, or `text:...`), `skip:N`
-pub fn parse_transform(text: &str) -> anyhow::Result<Transform> {
-    let key = |value: &str| -> anyhow::Result<Vec<u8>> {
-        let key = match value.strip_prefix("text:") {
-            Some(text) => text.as_bytes().to_vec(),
-            None => (0..value.len()).step_by(2).map(|i| value.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok())).collect::<Option<Vec<u8>>>().filter(|_| value.len() % 2 == 0).context("the key must be hex (e.g. 2a or deadbeef) or text:...")?,
-        };
-        if key.is_empty() {
-            bail!("empty key");
-        }
-        Ok(key)
-    };
-    Ok(match text.split_once(':') {
-        None if text == "base64" => Transform::Base64,
-        None if text == "hex" => Transform::Hex,
-        Some(("xor", value)) => Transform::Xor(key(value)?),
-        Some(("rc4", value)) => Transform::Rc4(key(value)?),
-        Some(("skip", value)) => Transform::Skip(value.parse().context("skip:N needs a number")?),
-        _ => bail!("unknown transform {text} (base64, hex, xor:KEY, rc4:KEY, skip:N)"),
-    })
-}
-
-fn rc4(key: &[u8], data: &[u8]) -> Vec<u8> {
-    let mut s: Vec<u8> = (0..=255).collect();
-    let mut j = 0u8;
-    for i in 0..256 {
-        j = j.wrapping_add(s[i]).wrapping_add(key[i % key.len()]);
-        s.swap(i, j as usize);
-    }
-    let (mut i, mut j) = (0u8, 0u8);
-    data.iter()
-        .map(|&b| {
-            i = i.wrapping_add(1);
-            j = j.wrapping_add(s[i as usize]);
-            s.swap(i as usize, j as usize);
-            b ^ s[s[i as usize].wrapping_add(s[j as usize]) as usize]
-        })
-        .collect()
-}
-
-pub fn apply(transforms: &[Transform], data: &[u8]) -> anyhow::Result<Vec<u8>> {
-    let mut data = data.to_vec();
-    for transform in transforms {
-        data = match transform {
-            Transform::Base64 => {
-                let text: String = String::from_utf8_lossy(&data).chars().filter(|c| !c.is_whitespace()).collect();
-                fakenet_schema::decode_base64(&text).context("not base64")?
-            }
-            Transform::Hex => {
-                let text: Vec<u8> = data.iter().copied().filter(|b| !b.is_ascii_whitespace()).collect();
-                if text.len() % 2 != 0 {
-                    bail!("odd number of hex digits");
-                }
-                text.chunks(2).map(|pair| std::str::from_utf8(pair).ok().and_then(|h| u8::from_str_radix(h, 16).ok())).collect::<Option<Vec<u8>>>().context("not hex")?
-            }
-            Transform::Xor(key) => data.iter().enumerate().map(|(i, b)| b ^ key[i % key.len()]).collect(),
-            Transform::Rc4(key) => rc4(key, &data),
-            Transform::Skip(n) => data.get(*n..).unwrap_or_default().to_vec(),
-        };
-    }
-    Ok(data)
-}
+pub use fakenet_model::transform::{apply, parse_transform, Transform};
 
 /// `--decode`: every client payload (of `filter`'s groups, if given) through `transforms`,
 /// saved to `out` as `<n>_<session>.bin` plus `index.json`
@@ -480,8 +408,6 @@ mod tests {
 
     #[test]
     fn transforms_chain() {
-        // RC4 test vector (Key = "Key", Plaintext = "Plaintext")
-        assert_eq!(hex(&rc4(b"Key", b"Plaintext")), "bbf316e8d940af0ad3");
         let transforms = [parse_transform("base64").unwrap(), parse_transform("xor:5a").unwrap()];
         let encoded = fakenet_schema::encode_base64(&b"secret".iter().map(|b| b ^ 0x5a).collect::<Vec<u8>>());
         assert_eq!(apply(&transforms, encoded.as_bytes()).unwrap(), b"secret");

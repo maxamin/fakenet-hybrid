@@ -220,6 +220,7 @@ Answer sources tried, in order, for what the rules and the explorer leave. See
 | `kind` | required | `model` or `plugin` |
 | `packs` | `[]` | `model`: model packs (JSON), merged; relative to the config file |
 | `outcomes` | `successful` | `model`: leave out failures (NXDOMAIN, HTTP 4xx/5xx); `all` keeps them |
+| `key_transforms` | `[]` | `model`: decoding steps applied to a request before looking it up, as the pack was learned with (`--learn --transform`) |
 | `command` | `[]` | `plugin`: the program and its arguments, run without a shell |
 | `timeout_ms` | 150 | `plugin`: answers later than this are dropped |
 | `rate` | 1.0 | Share of matching requests it answers |

@@ -346,8 +346,9 @@ pub fn write_report(event_files: &[PathBuf], output: &Path) -> anyhow::Result<()
     std::fs::write(output, fakenet_capture::report::render_with_map(&records, map.as_ref())).with_context(|| format!("writing {}", output.display()))
 }
 
-/// The pcap files to learn from: files as given; in folders (capture folders, `previous/`
-/// archives), every traffic*.pcap and wire*.pcap, recursively, sorted
+/// The capture files to learn from: files as given; in folders (capture folders and their
+/// `previous/` archives, dataset folders), every .pcap, .pcapng and .cap file, recursively,
+/// sorted
 pub fn learn_inputs(paths: &[PathBuf]) -> anyhow::Result<Vec<PathBuf>> {
     fn walk(dir: &Path, found: &mut Vec<PathBuf>, depth: usize) -> anyhow::Result<()> {
         for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))?.flatten() {
@@ -355,7 +356,7 @@ pub fn learn_inputs(paths: &[PathBuf]) -> anyhow::Result<Vec<PathBuf>> {
             let name = entry.file_name().to_string_lossy().into_owned();
             if path.is_dir() && depth < 4 {
                 walk(&path, found, depth + 1)?;
-            } else if (name.starts_with("traffic") || name.starts_with("wire")) && name.ends_with(".pcap") {
+            } else if [".pcap", ".pcapng", ".cap"].iter().any(|extension| name.to_ascii_lowercase().ends_with(extension)) {
                 found.push(path);
             }
         }

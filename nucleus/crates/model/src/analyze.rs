@@ -11,8 +11,14 @@ use fakenet_schema::{Protocol, Transport};
 pub trait Analyzer: Send + Sync {
     /// The protocol's name, as `fakenet_schema::Protocol::name`
     fn protocol(&self) -> &'static str;
-    /// Lookup keys for a request, most specific first (an empty request: a greeting)
+    /// Lookup keys for a request as captured on the wire, most specific first (an empty
+    /// request: a greeting)
     fn keys(&self, request: &[u8]) -> Vec<String>;
+    /// The same keys for a live event, whose payload some handlers reduce to the message
+    /// body (the rest is in `meta`: MQTT's topic, CoAP's method and path)
+    fn keys_for_event(&self, payload: &[u8], _meta: &serde_json::Value) -> Vec<String> {
+        self.keys(payload)
+    }
     /// The answer as stored and replayed; None to skip it (incomplete, unusable)
     fn stored_answer(&self, response: &[u8]) -> Option<Vec<u8>> {
         Some(response.to_vec())
@@ -39,6 +45,8 @@ pub fn analyzers() -> Vec<Box<dyn Analyzer>> {
         Box::new(Lines { protocol: "telnet", tag_first: false }),
         Box::new(Lines { protocol: "imap", tag_first: true }),
         Box::new(Redis),
+        Box::new(Mqtt),
+        Box::new(Coap),
     ]
 }
 
@@ -244,6 +252,167 @@ impl Analyzer for Redis {
     }
 }
 
+/// A topic or path with its variable segments typed (`bots/{n}/tasks`)
+fn normalize_path(path: &str, separator: char) -> String {
+    path.split(separator).take(12).map(normalize_segment).collect::<Vec<_>>().join(&separator.to_string())
+}
+
+/// MQTT: keyed by packet type and topic; the stored answer is the body of the first message
+/// the server PUBLISHed (what the nucleus's MQTT handler sends a subscriber)
+struct Mqtt;
+
+/// MQTT packets in `bytes`: (type, flags, body)
+fn mqtt_packets(mut bytes: &[u8]) -> Vec<(u8, u8, &[u8])> {
+    let mut packets = Vec::new();
+    while let Some(&first) = bytes.first() {
+        let (mut length, mut used) = (0usize, 1usize);
+        loop {
+            let Some(&byte) = bytes.get(used) else { return packets };
+            length |= usize::from(byte & 0x7f) << (7 * (used - 1));
+            used += 1;
+            if byte & 0x80 == 0 || used > 4 {
+                break;
+            }
+        }
+        let Some(body) = bytes.get(used..used + length) else { return packets };
+        packets.push((first >> 4, first & 0x0f, body));
+        bytes = &bytes[used + length..];
+        if packets.len() >= 64 {
+            break;
+        }
+    }
+    packets
+}
+
+/// A length-prefixed MQTT string at the start of `body`
+fn mqtt_string(body: &[u8]) -> Option<(&str, &[u8])> {
+    let length = usize::from(u16::from_be_bytes([*body.first()?, *body.get(1)?]));
+    let text = std::str::from_utf8(body.get(2..2 + length)?).ok()?;
+    Some((text, &body[2 + length..]))
+}
+
+const MQTT_TYPES: [&str; 16] = ["RESERVED", "CONNECT", "CONNACK", "PUBLISH", "PUBACK", "PUBREC", "PUBREL", "PUBCOMP", "SUBSCRIBE", "SUBACK", "UNSUBSCRIBE", "UNSUBACK", "PINGREQ", "PINGRESP", "DISCONNECT", "AUTH"];
+
+impl Mqtt {
+    fn key(packet: &str, topic: Option<&str>) -> Vec<String> {
+        match topic {
+            Some(topic) => vec![format!("{packet} {}", normalize_path(topic, '/')), format!("{packet} *"), "*".into()],
+            None => vec![packet.to_string(), "*".into()],
+        }
+    }
+}
+
+impl Analyzer for Mqtt {
+    fn protocol(&self) -> &'static str {
+        "mqtt"
+    }
+
+    fn keys(&self, request: &[u8]) -> Vec<String> {
+        let Some(&(kind, _, body)) = mqtt_packets(request).iter().find(|(kind, _, _)| matches!(kind, 3 | 8)) else {
+            return vec!["*".into()];
+        };
+        // PUBLISH: topic first; SUBSCRIBE: packet id, then (v3.1.1) the first topic
+        let topic = match kind {
+            3 => mqtt_string(body).map(|(t, _)| t),
+            _ => body.get(2..).and_then(mqtt_string).map(|(t, _)| t),
+        };
+        Mqtt::key(MQTT_TYPES[usize::from(kind)], topic)
+    }
+
+    fn keys_for_event(&self, _payload: &[u8], meta: &serde_json::Value) -> Vec<String> {
+        let packet = meta["packet"].as_str().unwrap_or("");
+        let topic = meta["topic"].as_str().or_else(|| meta["topics"][0].as_str());
+        Mqtt::key(packet, topic)
+    }
+
+    fn stored_answer(&self, response: &[u8]) -> Option<Vec<u8>> {
+        let (_, flags, body) = mqtt_packets(response).into_iter().find(|(kind, _, _)| *kind == 3)?;
+        let (_, rest) = mqtt_string(body)?;
+        // QoS 1 and 2 carry a packet id (v3.1.1 layout)
+        let message = if flags & 0x06 != 0 { rest.get(2..)? } else { rest };
+        Some(message.to_vec())
+    }
+}
+
+/// CoAP (RFC 7252): keyed by method and Uri-Path; the stored answer is the response payload
+struct Coap;
+
+const COAP_METHODS: [&str; 8] = ["EMPTY", "GET", "POST", "PUT", "DELETE", "FETCH", "PATCH", "IPATCH"];
+
+/// A CoAP message: (code, Uri-Path, payload)
+fn coap_parse(message: &[u8]) -> Option<(u8, String, &[u8])> {
+    if message.len() < 4 || message[0] >> 6 != 1 {
+        return None;
+    }
+    let mut at = 4 + usize::from(message[0] & 0x0f);
+    let mut option = 0u32;
+    let mut path = Vec::new();
+    while let Some(&byte) = message.get(at) {
+        if byte == 0xff {
+            return Some((message[1], format!("/{}", path.join("/")), message.get(at + 1..).unwrap_or_default()));
+        }
+        at += 1;
+        let mut extended = |nibble: u8| -> Option<u32> {
+            Some(match nibble {
+                13 => {
+                    let value = u32::from(*message.get(at)?) + 13;
+                    at += 1;
+                    value
+                }
+                14 => {
+                    let value = u32::from(u16::from_be_bytes([*message.get(at)?, *message.get(at + 1)?])) + 269;
+                    at += 2;
+                    value
+                }
+                15 => return None,
+                n => u32::from(n),
+            })
+        };
+        let delta = extended(byte >> 4)?;
+        let length = extended(byte & 0x0f)? as usize;
+        option += delta;
+        let value = message.get(at..at + length)?;
+        at += length;
+        if option == 11 && path.len() < 12 {
+            path.push(String::from_utf8_lossy(value).into_owned());
+        }
+    }
+    Some((message[1], format!("/{}", path.join("/")), &[]))
+}
+
+impl Coap {
+    fn key(method: &str, path: &str) -> Vec<String> {
+        vec![format!("{method} {}", normalize_path(path, '/')), format!("{method} *"), "*".into()]
+    }
+}
+
+impl Analyzer for Coap {
+    fn protocol(&self) -> &'static str {
+        "coap"
+    }
+
+    fn keys(&self, request: &[u8]) -> Vec<String> {
+        match coap_parse(request) {
+            Some((code, path, _)) if code >> 5 == 0 => Coap::key(COAP_METHODS.get(usize::from(code & 0x1f)).copied().unwrap_or("UNKNOWN"), &path),
+            _ => vec!["*".into()],
+        }
+    }
+
+    fn keys_for_event(&self, _payload: &[u8], meta: &serde_json::Value) -> Vec<String> {
+        Coap::key(meta["method"].as_str().unwrap_or(""), meta["path"].as_str().unwrap_or("/"))
+    }
+
+    fn stored_answer(&self, response: &[u8]) -> Option<Vec<u8>> {
+        let (code, _, payload) = coap_parse(response)?;
+        // Responses only (2.xx-5.xx), with something to send back
+        (code >> 5 >= 2 && !payload.is_empty()).then(|| payload.to_vec())
+    }
+
+    fn is_failure(&self, _answer: &[u8]) -> bool {
+        false
+    }
+}
+
 /// Anything else: keyed by the first two bytes and the size class
 struct Generic {
     protocol: &'static str,
@@ -257,6 +426,15 @@ impl Analyzer for Generic {
     fn keys(&self, request: &[u8]) -> Vec<String> {
         if request.is_empty() {
             return vec![GREETING.into()];
+        }
+        // Text (a C2 command, often once decoded): its first word, like a line protocol
+        let sample = &request[..request.len().min(256)];
+        if sample.iter().all(|&b| (0x20..0x7f).contains(&b) || b"\r\n\t".contains(&b)) {
+            // The leading letters of the first token: "uptime=7" and "uptime=9" share "UPTIME"
+            let word: String = String::from_utf8_lossy(sample).split_whitespace().next().unwrap_or("").chars().take_while(|c| c.is_ascii_alphabetic() || *c == '_').take(16).collect();
+            if !word.is_empty() {
+                return vec![format!("text:{}", word.to_ascii_uppercase()), "text:*".into(), "*".into()];
+            }
         }
         let size = format!("len{}", request.len().next_power_of_two());
         let magic: String = request.iter().take(2).map(|b| format!("{b:02x}")).collect();
@@ -281,7 +459,33 @@ mod tests {
         assert_eq!(for_protocol("smtp").keys(b"")[0], GREETING);
         assert_eq!(for_protocol("redis").keys(b"*1\r\n$4\r\nPING\r\n")[0], "PING");
         assert_eq!(for_protocol("raw").keys(b"\xde\xad\x01")[0], "dead:len4");
+        assert_eq!(for_protocol("raw").keys(b"hello operator\n")[0], "text:HELLO");
+        assert_eq!(for_protocol("raw").keys(b"uptime=7 user=bob")[0], for_protocol("raw").keys(b"uptime=9 user=eve")[0]);
         assert_eq!(for_protocol("nonsense").protocol(), "raw");
+    }
+
+    #[test]
+    fn mqtt_and_coap_key_the_wire_and_events_alike() {
+        // MQTT PUBLISH (QoS 0) of "go" to bots/1234/tasks, as captured
+        let topic = b"bots/1234/tasks";
+        let mut publish = vec![0x30, (2 + topic.len() + 2) as u8, 0, topic.len() as u8];
+        publish.extend(topic);
+        publish.extend(b"go");
+        let mqtt = for_protocol("mqtt");
+        assert_eq!(mqtt.keys(&publish)[0], "PUBLISH bots/{n}/tasks");
+        assert_eq!(mqtt.keys_for_event(b"go", &serde_json::json!({ "packet": "PUBLISH", "topic": "bots/99/tasks" }))[0], "PUBLISH bots/{n}/tasks");
+        assert_eq!(mqtt.stored_answer(&publish).unwrap(), b"go"); // The body, as the handler sends it
+        let connack = [0x20, 2, 0, 0];
+        assert!(mqtt.stored_answer(&connack).is_none());
+        // CoAP GET /sensors/7 (confirmable, token 1 byte), and a 2.05 Content response
+        let get = [0x41, 0x01, 0x12, 0x34, 0xaa, 0xb7, b's', b'e', b'n', b's', b'o', b'r', b's', 0x01, b'7'];
+        let coap = for_protocol("coap");
+        assert_eq!(coap.keys(&get)[0], "GET /sensors/{n}");
+        assert_eq!(coap.keys_for_event(b"", &serde_json::json!({ "method": "GET", "path": "/sensors/12" }))[0], "GET /sensors/{n}");
+        let content = [0x61, 0x45, 0x12, 0x34, 0xaa, 0xff, b'2', b'1', b'.', b'5'];
+        assert_eq!(coap.stored_answer(&content).unwrap(), b"21.5");
+        assert!(coap.stored_answer(&get).is_none()); // A request isn't an answer
+        assert!(coap.keys(&[0x41, 0x01, 0, 0, 0, 0xf0]).len() == 1); // Malformed option: no panic
     }
 
     #[test]

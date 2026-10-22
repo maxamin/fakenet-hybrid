@@ -81,6 +81,10 @@ pub struct ResponderConfig {
     /// recorded distribution, failures such as NXDOMAIN and HTTP errors included)
     #[serde(default)]
     pub outcomes: Outcomes,
+    /// `model`: decoding steps applied to a request before looking it up, as it was learned
+    /// with (`--learn --transform ...`): base64, hex, xor:KEY, rc4:KEY, skip:N
+    #[serde(default)]
+    pub key_transforms: Vec<String>,
     #[serde(flatten)]
     pub filter: EventFilter,
 }
@@ -103,7 +107,8 @@ pub fn build(configs: &[ResponderConfig]) -> anyhow::Result<Vec<Arc<dyn Responde
             ResponderKind::Model => {
                 anyhow::ensure!(!config.packs.is_empty(), "[[responder]] {}: a model needs packs = [\"...json\"]", config.name);
                 let model = fakenet_model::Model::load(&config.packs).map_err(|e| anyhow::anyhow!("[[responder]] {}: {e:#}", config.name))?;
-                responders.push(Arc::new(ModelResponder { name: config.name.clone(), model, gate, successful_only: config.outcomes == Outcomes::Successful }));
+                let key_transforms = config.key_transforms.iter().map(|t| fakenet_model::transform::parse_transform(t)).collect::<anyhow::Result<Vec<_>>>().map_err(|e| anyhow::anyhow!("[[responder]] {}: key_transforms: {e:#}", config.name))?;
+                responders.push(Arc::new(ModelResponder { name: config.name.clone(), model, gate, successful_only: config.outcomes == Outcomes::Successful, key_transforms }));
             }
             ResponderKind::Plugin => {
                 anyhow::ensure!(!config.command.is_empty(), "[[responder]] {}: a plugin needs command = [\"program\", ...]", config.name);
@@ -136,6 +141,7 @@ pub struct ModelResponder {
     model: fakenet_model::Model,
     gate: Gate,
     successful_only: bool,
+    key_transforms: Vec<fakenet_model::transform::Transform>,
 }
 
 impl Responder for ModelResponder {
@@ -151,7 +157,9 @@ impl Responder for ModelResponder {
             let protocol = event.protocol.name();
             let sampled = {
                 let mut rng = self.gate.rng.lock().unwrap_or_else(|e| e.into_inner());
-                self.model.answer_with(protocol, &event.payload, &mut rng, self.successful_only)?
+                // Looked up as learned: decoded the same way (or as sent, if it doesn't decode)
+                let decoded = (!self.key_transforms.is_empty()).then(|| fakenet_model::transform::apply(&self.key_transforms, &event.payload).ok()).flatten();
+                self.model.answer_event(protocol, decoded.as_deref().unwrap_or(&event.payload), &event.meta, &mut rng, self.successful_only)?
             };
             Some(Proposal {
                 response: sampled.bytes,
@@ -318,12 +326,12 @@ mod tests {
     async fn the_model_answers_matching_requests() {
         let mut pack = fakenet_model::Pack::default();
         pack.add("http", b"GET /gate/1 HTTP/1.1\r\n", b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ntask");
-        let responder = ModelResponder { name: "model".into(), model: fakenet_model::Model::new(pack), gate: gate(vec![fakenet_schema::Protocol::Http], 1.0), successful_only: true };
+        let responder = ModelResponder { name: "model".into(), model: fakenet_model::Model::new(pack), gate: gate(vec![fakenet_schema::Protocol::Http], 1.0), successful_only: true, key_transforms: Vec::new() };
         let proposal = responder.respond(&event("http", b"GET /gate/2 HTTP/1.1\r\n"), None).await.unwrap();
         assert!(proposal.response.ends_with(b"task"));
         assert_eq!(proposal.route, "model:GET /gate/{n}");
         assert!(responder.respond(&event("dns", b""), None).await.is_none()); // Filtered out
-        let never = ModelResponder { name: "m".into(), model: fakenet_model::Model::new(fakenet_model::Pack::default()), gate: gate(vec![], 0.0), successful_only: true };
+        let never = ModelResponder { name: "m".into(), model: fakenet_model::Model::new(fakenet_model::Pack::default()), gate: gate(vec![], 0.0), successful_only: true, key_transforms: Vec::new() };
         assert!(never.respond(&event("http", b"GET / HTTP/1.1"), None).await.is_none()); // rate 0
     }
 

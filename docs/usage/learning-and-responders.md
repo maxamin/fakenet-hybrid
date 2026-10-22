@@ -17,10 +17,11 @@ Diagrams: `design/architecture.md` and `design/extension-points.md` in the repos
 
 ## Learning a model
 
-`--learn` reads classic pcap files: this project's captures (`traffic.pcap`, `wire.pcap`;
-a folder is searched for them, including `previous/` archives), captures from fuzzing or REA
-runs, and public datasets. pcapng must be converted first (`editcap -F pcap in.pcapng
-out.pcap`). Link types: raw IP, Ethernet (with VLAN tags), Linux cooked v1 and v2.
+`--learn` reads pcap and pcapng files: this project's captures (`traffic.pcap`, `wire.pcap`),
+captures from fuzzing or REA runs, and public datasets. A folder is searched recursively for
+`.pcap`, `.pcapng` and `.cap` files (capture folders and their `previous/` archives included).
+Link types: raw IP, Ethernet (with VLAN tags), Linux cooked v1 and v2. `--merge pack.json`
+adds what is learned to an existing pack instead of starting a new one.
 
 For each TCP connection (reassembled per direction) and UDP flow, it pairs what the client
 sent with what the server answered, identifies the protocol from the first client bytes and
@@ -32,13 +33,43 @@ the port (as the nucleus's sniffer does), and files the answer under a **request
 | DNS | query type (`A`, `TXT`...) | answer lines the DNS handler takes (`A 1.2.3.4`, `TXT ...`, `NXDOMAIN`) |
 | SMTP, POP3, FTP, IRC, Telnet, IMAP | the command (IMAP: after the tag) | the server's reply |
 | Redis | the command name | the reply |
-| Anything else | first two bytes and size class (`dead:len64`) | the reply |
+| MQTT | packet type and topic (`PUBLISH bots/{n}/tasks`) | the body of the server's first PUBLISH (what the MQTT handler sends a subscriber) |
+| CoAP | method and Uri-Path (`GET /sensors/{n}`) | the response payload |
+| Anything else, text | `text:` and the leading word (`text:UPTIME`) | the reply |
+| Anything else, binary | first two bytes and size class (`dead:len64`) | the reply |
 | All | `<greeting>` for what a server sends before any request | the banner |
 
 The result is a **model pack**: JSON (`fakenet-model-pack`, version 1) listing, per protocol
 and key, the distinct answers (base64, up to 64 KiB each, 16 per key) and how often each was
 seen, plus the source file names. Packs are meant to be shared and combined: list several in
 `packs` and their counts add up.
+
+SMB and LDAP aren't learned: their handlers build each answer from protocol state, so a
+recorded one can't be replayed.
+
+### Encoded C2: keying by the decoded command
+
+A C2 protocol that encodes its messages gives every request a different look. Learn with the
+same decoding steps as `--decode` (find them with `--infer`), and requests are keyed by
+their decoded content while answers are stored as sent:
+
+```sh
+fakenet-nucleus --learn capture/ --transform skip:9 --transform xor:5a --only ":4444" -o c2.json
+```
+
+`--only` limits the decoding to flows whose `"<protocol> :<port>"` contains the text. The
+responder must decode live requests the same way, with `key_transforms`:
+
+```toml
+[[responder]]
+name = "c2"
+kind = "model"
+packs = ["c2.json"]
+key_transforms = ["skip:9", "xor:5a"]
+protocols = ["raw"]
+```
+
+A request that doesn't decode is looked up as sent.
 
 ## Answering from a model
 

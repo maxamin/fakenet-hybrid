@@ -20,6 +20,18 @@ interface.
 - [x] M7 Tests end to end (learn from a capture, answer from the model, plugin), full
       suites, Windows check, docs build; commit and push
 
+## Round 2
+
+- [x] R1 Analysers for MQTT (packet type, topic) and CoAP (method, path), keyed the same
+      from the wire and from live events (`keys_for_event`). SMB and LDAP left out: their
+      handlers build answers from protocol state, so recorded ones can't be replayed
+- [x] R2 pcapng input (section, interface and packet blocks; per-interface link type and
+      timestamp resolution)
+- [x] R3 Incremental learning: `--learn ... --merge pack.json` adds to an existing pack
+- [x] R4 Decoding before keying: `--learn ... --transform skip:9 --transform xor:5a --only :4444`
+      keys encoded C2 messages by their decoded command; answers stay as sent
+- [x] R5 Tests, fuzz the new parsers, docs, commit and push
+
 ## Notes
 
 - Verified on real data: Wireshark's public dns.cap (Ethernet) and http_with_jpegs.cap, plus
@@ -30,11 +42,14 @@ interface.
 
 - Fuzzing (`nucleus/fuzz`, target `model`) found a panic in the pcap reader (an IP header
   longer than the packet); fixed, kept as a seed and a unit test; 143,300 runs clean after.
-- Results: 199 Rust tests, 22 daemon tests, 3 plugin tests, Windows cross-check, docs -W.
+- Round 2: pcapng from Wireshark's editcap gives the same model as the classic pcap; an
+  XOR-encoded C2 capture keys by command (HELLO, LIST, STAGE, UPTIME) instead of
+  "424f:len32", and an unseen encoded "list ..." request was answered from the LIST answers.
+  Fuzzing the extended target: 80,165 runs, clean. 200 Rust tests.
+- Results (round 1): 199 Rust tests, 22 daemon tests, 3 plugin tests, Windows cross-check, docs -W.
 
 ## Later
 
-- Online learning (update packs from live traffic), decoders applied while learning
-  (TLS key log, XOR/RC4 from `--infer`), pcapng input
+- Online learning (update packs from live traffic), TLS decryption while learning (key log)
 - Grammar-aware synthesis from pack statistics (not only replay), coverage-guided corpus
 - More analysers (SMB, LDAP, MQTT, CoAP fields)

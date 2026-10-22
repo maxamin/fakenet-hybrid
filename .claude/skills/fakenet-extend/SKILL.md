@@ -13,7 +13,8 @@ Read `design/architecture.md` and `design/extension-points.md` first: they are t
 | Piece | Where | Contract |
 |---|---|---|
 | Model packs | `nucleus/crates/model` | `fakenet-model-pack` v1 JSON: per protocol and request key, answers (base64) and counts |
-| Analysers | `model/src/analyze.rs` | `keys` (most specific first, `"*"` last), `stored_answer` (the handler's input form), `is_failure` |
+| Analysers | `model/src/analyze.rs` | `keys` (wire bytes, most specific first, `"*"` last), `keys_for_event` (payload + meta: must give the same keys), `stored_answer` (the handler's input form), `is_failure` |
+| Transforms | `model/src/transform.rs` | shared by `--decode`, `--learn --transform`, `key_transforms` |
 | Responders | `listeners/src/responders.rs` | `Responder::respond(event, default) -> Option<Proposal>`, fast and bounded |
 | Plugins | `plugins/` | JSON lines on stdin/stdout (`plugins/README.md`); helper `fakenet_plugin.py` |
 | Transforms | `cli/src/infer.rs` | `--decode` steps: base64, hex, xor, rc4, skip |
@@ -38,7 +39,9 @@ Order of answers for one request: rules (daemon) -> explorer -> responders (conf
   `infer.rs`; test it with a published vector (as RC4's).
 - **Learn and use a model:** `fakenet-nucleus --learn capture/ datasets/*.pcap -o model.json`,
   `--model-info model.json`, then `[[responder]] kind = "model"`, `packs = ["model.json"]`
-  (`outcomes = "all"` to include failures). pcapng: convert with `editcap -F pcap`.
+  (`outcomes = "all"` to include failures). pcap and pcapng both work; `--merge` adds to a pack.
+- **Encoded C2:** find the framing and key with `--infer`, then `--learn ... --transform skip:N
+  --transform xor:KEY --only ":PORT"` and the same steps as the responder's `key_transforms`.
 
 ## Generating UML and skeletons with Claude
 
