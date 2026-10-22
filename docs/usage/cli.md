@@ -47,6 +47,7 @@ Logging uses `RUST_LOG` (`tracing-subscriber` env filter; default `info`), for e
 | `--only TEXT` | | `--decode`: only destinations containing TEXT (e.g. `:4444`); `--learn`: only flows whose `"<protocol> :<port>"` contains it |
 | `--learn PCAP...` | | Learn a model pack from pcap or pcapng files, or folders (their `.pcap`, `.pcapng`, `.cap` files, recursively), into `-o` (default `model.json`). With `--transform` (and `--only`), requests are keyed by their decoded content. See [learned models](learning-and-responders.md) |
 | `--merge PACK` | | `--learn` only: add to this pack, written back to it unless `-o` is given |
+| `--keylog FILE` | | `--learn` only: an NSS key log (`SSLKEYLOGFILE`, a capture's `tls-keys.log`); TLS 1.3 and TLS 1.2 AEAD sessions it has secrets for are learned from their plaintext |
 | `--model-info PACK` | | Summarise a model pack: protocols, exchanges, most frequent request keys |
 | `--all-protocols` | | `--infer`, `--decode`: every protocol, not only `raw` |
 | `-o, --output PATH` | | Output for the modes above |

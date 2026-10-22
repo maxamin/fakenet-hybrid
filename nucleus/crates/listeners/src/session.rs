@@ -50,6 +50,8 @@ pub struct Context {
     pub hooks: Option<Arc<crate::hooks::Hooks>>,
     /// Answer sources tried, in order, when neither the rules nor the explorer answered
     pub responders: Vec<Arc<dyn crate::responders::Responder>>,
+    /// Online learning (`[learn]`): records curated answers into a model pack
+    pub learner: Option<Arc<crate::responders::OnlineLearner>>,
 }
 
 pub struct Session {
@@ -173,11 +175,39 @@ impl Session {
             hooks.fire(&event, &self.ctx.capture).await;
         }
         let decided = self.decide_event(&event, default).await;
+        let chosen = self.with_manual(&event, decided, default).await;
+        if let (Some(learner), Some(action)) = (&self.ctx.learner, &chosen) {
+            if let Some(response) = &action.response {
+                learner.observe(&event, self.source_of(action), response);
+            }
+        }
+        chosen
+    }
+
+    /// Where an answer came from, for online learning
+    fn source_of(&self, action: &Action) -> Option<crate::responders::LearnSource> {
+        use crate::responders::LearnSource;
+        let route = action.route.as_deref().unwrap_or("");
+        if route == "manual" {
+            return Some(LearnSource::Manual);
+        }
+        if route.starts_with("explorer:") {
+            return Some(LearnSource::Explorer);
+        }
+        let responder = self.ctx.responders.iter().find(|r| route == r.name() || route.strip_prefix(r.name()).is_some_and(|rest| rest.starts_with(':')));
+        match responder {
+            Some(responder) => responder.learnable().then_some(LearnSource::Plugins),
+            None => Some(LearnSource::Rules),
+        }
+    }
+
+    /// Live manual mode's turn: holds matching requests for the analyst
+    async fn with_manual(&mut self, event: &fakenet_schema::Event, decided: Option<Action>, default: Option<&[u8]>) -> Option<Action> {
         match &self.ctx.manual {
-            Some(manual) if manual.wants(&event) => {
+            Some(manual) if manual.wants(event) => {
                 let proposed = decided.as_ref().and_then(|a| a.response.as_deref()).or(default);
                 let close = decided.as_ref().is_some_and(|a| a.close);
-                let verdict = manual.hold(&event, proposed, close).await;
+                let verdict = manual.hold(event, proposed, close).await;
                 let (response, close, chosen) = match verdict {
                     crate::manual::Verdict::Proposed => return decided,
                     crate::manual::Verdict::Send { response, close } => (response, close, "send"),

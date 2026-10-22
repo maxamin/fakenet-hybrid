@@ -41,6 +41,10 @@ pub type Respond<'a> = Pin<Box<dyn Future<Output = Option<Proposal>> + Send + 'a
 
 pub trait Responder: Send + Sync {
     fn name(&self) -> &str;
+    /// Whether online learning may record its answers (a model's own answers: no)
+    fn learnable(&self) -> bool {
+        true
+    }
     /// An answer for `event` (`default`: the handler's built-in answer, when known), or None
     fn respond<'a>(&'a self, event: &'a Event, default: Option<&'a [u8]>) -> Respond<'a>;
 }
@@ -85,6 +89,10 @@ pub struct ResponderConfig {
     /// with (`--learn --transform ...`): base64, hex, xor:KEY, rc4:KEY, skip:N
     #[serde(default)]
     pub key_transforms: Vec<String>,
+    /// `model`: generate new text answers from the recorded ones (a Markov model per request
+    /// key) instead of replaying them; binary answers and DNS are still replayed
+    #[serde(default)]
+    pub generate: bool,
     #[serde(flatten)]
     pub filter: EventFilter,
 }
@@ -106,9 +114,9 @@ pub fn build(configs: &[ResponderConfig]) -> anyhow::Result<Vec<Arc<dyn Responde
         match config.kind {
             ResponderKind::Model => {
                 anyhow::ensure!(!config.packs.is_empty(), "[[responder]] {}: a model needs packs = [\"...json\"]", config.name);
-                let model = fakenet_model::Model::load(&config.packs).map_err(|e| anyhow::anyhow!("[[responder]] {}: {e:#}", config.name))?;
+                let model = fakenet_model::LiveModel::load(&config.packs).map_err(|e| anyhow::anyhow!("[[responder]] {}: {e:#}", config.name))?;
                 let key_transforms = config.key_transforms.iter().map(|t| fakenet_model::transform::parse_transform(t)).collect::<anyhow::Result<Vec<_>>>().map_err(|e| anyhow::anyhow!("[[responder]] {}: key_transforms: {e:#}", config.name))?;
-                responders.push(Arc::new(ModelResponder { name: config.name.clone(), model, gate, successful_only: config.outcomes == Outcomes::Successful, key_transforms }));
+                responders.push(Arc::new(ModelResponder { name: config.name.clone(), model, gate, successful_only: config.outcomes == Outcomes::Successful, key_transforms, generate: config.generate }));
             }
             ResponderKind::Plugin => {
                 anyhow::ensure!(!config.command.is_empty(), "[[responder]] {}: a plugin needs command = [\"program\", ...]", config.name);
@@ -138,15 +146,21 @@ impl Gate {
 /// Answers from a learned traffic model
 pub struct ModelResponder {
     name: String,
-    model: fakenet_model::Model,
+    /// Reloaded when a pack changes on disk
+    model: fakenet_model::LiveModel,
     gate: Gate,
     successful_only: bool,
     key_transforms: Vec<fakenet_model::transform::Transform>,
+    generate: bool,
 }
 
 impl Responder for ModelResponder {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn learnable(&self) -> bool {
+        false
     }
 
     fn respond<'a>(&'a self, event: &'a Event, _default: Option<&'a [u8]>) -> Respond<'a> {
@@ -155,17 +169,22 @@ impl Responder for ModelResponder {
                 return None;
             }
             let protocol = event.protocol.name();
+            let model = self.model.current();
             let sampled = {
                 let mut rng = self.gate.rng.lock().unwrap_or_else(|e| e.into_inner());
                 // Looked up as learned: decoded the same way (or as sent, if it doesn't decode)
                 let decoded = (!self.key_transforms.is_empty()).then(|| fakenet_model::transform::apply(&self.key_transforms, &event.payload).ok()).flatten();
-                self.model.answer_event(protocol, decoded.as_deref().unwrap_or(&event.payload), &event.meta, &mut rng, self.successful_only)?
+                let request = decoded.as_deref().unwrap_or(&event.payload);
+                match self.generate {
+                    true => model.generate_event(protocol, request, &event.meta, &mut rng, self.successful_only)?,
+                    false => model.answer_event(protocol, request, &event.meta, &mut rng, self.successful_only)?,
+                }
             };
             Some(Proposal {
                 response: sampled.bytes,
                 close: false,
                 route: format!("{}:{}", self.name, sampled.key),
-                detail: json!({ "key": sampled.key, "probability": (sampled.probability * 1000.0).round() / 1000.0 }),
+                detail: json!({ "key": sampled.key, "probability": (sampled.probability * 1000.0).round() / 1000.0, "generated": sampled.generated }),
             })
         })
     }
@@ -318,6 +337,14 @@ mod tests {
         .unwrap()
     }
 
+    /// A live model over one pack saved to a temporary file
+    fn live(pack: fakenet_model::Pack) -> fakenet_model::LiveModel {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!("fakenet-live-{}-{}.json", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        pack.save(&path).unwrap();
+        fakenet_model::LiveModel::load(&[path]).unwrap()
+    }
+
     fn gate(protocols: Vec<fakenet_schema::Protocol>, rate: f64) -> Gate {
         Gate { filter: EventFilter { protocols, ..Default::default() }, rate, rng: Mutex::new(fakenet_model::Rng::new(3)) }
     }
@@ -326,12 +353,12 @@ mod tests {
     async fn the_model_answers_matching_requests() {
         let mut pack = fakenet_model::Pack::default();
         pack.add("http", b"GET /gate/1 HTTP/1.1\r\n", b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ntask");
-        let responder = ModelResponder { name: "model".into(), model: fakenet_model::Model::new(pack), gate: gate(vec![fakenet_schema::Protocol::Http], 1.0), successful_only: true, key_transforms: Vec::new() };
+        let responder = ModelResponder { name: "model".into(), model: live(pack), gate: gate(vec![fakenet_schema::Protocol::Http], 1.0), successful_only: true, key_transforms: Vec::new(), generate: false };
         let proposal = responder.respond(&event("http", b"GET /gate/2 HTTP/1.1\r\n"), None).await.unwrap();
         assert!(proposal.response.ends_with(b"task"));
         assert_eq!(proposal.route, "model:GET /gate/{n}");
         assert!(responder.respond(&event("dns", b""), None).await.is_none()); // Filtered out
-        let never = ModelResponder { name: "m".into(), model: fakenet_model::Model::new(fakenet_model::Pack::default()), gate: gate(vec![], 0.0), successful_only: true, key_transforms: Vec::new() };
+        let never = ModelResponder { name: "m".into(), model: live(fakenet_model::Pack::default()), gate: gate(vec![], 0.0), successful_only: true, key_transforms: Vec::new(), generate: false };
         assert!(never.respond(&event("http", b"GET / HTTP/1.1"), None).await.is_none()); // rate 0
     }
 
@@ -358,5 +385,56 @@ for line in sys.stdin:
         let started = Instant::now();
         assert!(silent.respond(&event("http", b"GET /"), None).await.is_none());
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+}
+
+/// Which answers online learning records
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LearnSource {
+    /// The daemon's rules
+    Rules,
+    /// Live manual mode
+    Manual,
+    /// Plugin responders
+    Plugins,
+    /// The explorer's experiments
+    Explorer,
+}
+
+/// `[learn]`: online learning into a model pack
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct LearnConfig {
+    /// The pack to add to (created if missing); unset: off
+    pub into: Option<PathBuf>,
+    pub sources: Vec<LearnSource>,
+    /// How often the pack is written (and at stop)
+    pub save_every_s: u64,
+}
+
+impl Default for LearnConfig {
+    fn default() -> Self {
+        LearnConfig { into: None, sources: vec![LearnSource::Rules, LearnSource::Manual, LearnSource::Plugins], save_every_s: 30 }
+    }
+}
+
+/// Online learning as the session sees it
+pub struct OnlineLearner {
+    pub learner: fakenet_model::Learner,
+    pub sources: Vec<LearnSource>,
+}
+
+impl OnlineLearner {
+    /// Records `response` for `event` if its source is one being learned
+    pub fn observe(&self, event: &Event, source: Option<LearnSource>, response: &[u8]) {
+        let Some(source) = source.filter(|s| self.sources.contains(s)) else { return };
+        if response.is_empty() {
+            return;
+        }
+        let protocol = event.protocol.name();
+        let keys = fakenet_model::analyze::for_protocol(protocol).keys_for_event(&event.payload, &event.meta);
+        let _ = source;
+        self.learner.record(protocol, &keys, response);
     }
 }

@@ -56,6 +56,9 @@ pub struct Config {
     /// Answer sources (learned models, plugins) for what the rules and the explorer leave
     #[serde(default, rename = "responder")]
     pub responders: Vec<fakenet_listeners::responders::ResponderConfig>,
+    /// Online learning into a model pack
+    #[serde(default)]
+    pub learn: fakenet_listeners::responders::LearnConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -180,6 +183,9 @@ impl Config {
         };
         resolve(&mut self.nucleus.capture_dir);
         self.responders.iter_mut().flat_map(|r| r.packs.iter_mut()).for_each(resolve);
+        if let Some(path) = self.learn.into.as_mut() {
+            resolve(path);
+        }
         self.nucleus.fingerprints.iter_mut().for_each(resolve);
         self.yara.rules.iter_mut().for_each(resolve);
         for path in [&mut self.nucleus.ca_cert, &mut self.nucleus.ca_key, &mut self.daemon.secret_file, &mut self.defaults.http.webroot, &mut self.defaults.ftp.root, &mut self.defaults.tftp.root] {
@@ -193,7 +199,7 @@ impl Config {
             }
         }
         let explorer = &mut self.explorer;
-        for path in explorer.templates.iter_mut().chain(explorer.samples.iter_mut()).chain(explorer.rea.iter_mut()).chain(explorer.coverage_dir.iter_mut()) {
+        for path in explorer.templates.iter_mut().chain(explorer.samples.iter_mut()).chain(explorer.rea.iter_mut()).chain(explorer.coverage_dir.iter_mut()).chain(explorer.corpus_dir.iter_mut()) {
             resolve(path);
         }
     }

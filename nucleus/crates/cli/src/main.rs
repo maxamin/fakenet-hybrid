@@ -97,6 +97,10 @@ struct Args {
     /// With --learn: add to this existing pack (and write there unless --output is given)
     #[arg(long, value_name = "PACK", requires = "learn")]
     merge: Option<PathBuf>,
+    /// With --learn: an NSS key log (SSLKEYLOGFILE, or a capture's tls-keys.log); TLS 1.3 and
+    /// TLS 1.2 AEAD sessions it has secrets for are learned from their plaintext
+    #[arg(long, value_name = "FILE", requires = "learn")]
+    keylog: Option<PathBuf>,
     /// Summarise a model pack (protocols, exchanges, most frequent requests), and exit
     #[arg(long, value_name = "PACK")]
     model_info: Option<PathBuf>,
@@ -165,7 +169,14 @@ async fn main() -> anyhow::Result<()> {
             }
             fakenet_model::transform::apply(&transforms, request).ok()
         };
-        let mut pack = fakenet_model::learn_with(&files, &decode)?;
+        let keys = match &args.keylog {
+            Some(path) => Some(fakenet_model::tls::KeyLog::load(path)?),
+            None => None,
+        };
+        let mut pack = fakenet_model::learn_with(&files, &decode, keys.as_ref())?;
+        if let Some(keys) = &keys {
+            println!("Decrypted {} TLS sessions ({} in the key log)", pack.decrypted, keys.len());
+        }
         let mut learned = None;
         if let Some(base) = &args.merge {
             learned = Some(pack.protocols.values().map(|p| p.exchanges).sum::<u64>());
@@ -330,6 +341,10 @@ async fn main() -> anyhow::Result<()> {
     let explorer = match config.explorer.enabled {
         true => {
             let explorer = Arc::new(fakenet_explorer::Explorer::load(config.explorer.clone())?);
+            let corpus = explorer.load_corpus()?;
+            if corpus > 0 {
+                tracing::info!("Explorer corpus: {corpus} answers from earlier runs");
+            }
             let map = explorer.map();
             tracing::info!("Explorer on (rate {}); hints: {}", explorer.config().rate, map["hints"]);
             Some(explorer)
@@ -341,6 +356,16 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("Live manual mode: matching requests wait up to {} ms for an answer from the dashboard", config.manual.timeout_ms);
     }
     let hooks = (!config.hooks.is_empty()).then(|| Arc::new(fakenet_listeners::hooks::Hooks::new(config.hooks.clone())));
+    // Online learning: curated answers of this run, added to a model pack
+    let learner = match &config.learn.into {
+        Some(path) => {
+            let source = format!("live:{}", capture.dir().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+            let learner = fakenet_model::Learner::open(path, &source).with_context(|| format!("[learn] into = {}", path.display()))?;
+            tracing::info!("Online learning into {} ({:?})", path.display(), config.learn.sources);
+            Some(Arc::new(fakenet_listeners::responders::OnlineLearner { learner, sources: config.learn.sources.clone() }))
+        }
+        None => None,
+    };
     let link = Link::start(config.link(secret.as_deref()));
     let limits = Arc::new(fakenet_listeners::Limits::new(&config.limits));
     let ctx = Arc::new(Context {
@@ -357,6 +382,7 @@ async fn main() -> anyhow::Result<()> {
         manual: manual.clone(),
         hooks: hooks.clone(),
         responders: fakenet_listeners::responders::build(&config.responders)?,
+        learner: learner.clone(),
     });
     let server = Server::start(ctx.clone(), config.nucleus.bind, &config.listeners).await?;
     for (name, transport, address) in &server.bound {
@@ -380,6 +406,22 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("dashboard: http://{}/dashboard{}", config.nucleus.health, if secret.is_some() { "?token=<the link secret>" } else { "" });
     let health_task = tokio::spawn(serve_control(health, control));
     let mut background = Vec::new();
+    if let Some(learner) = &learner {
+        let (learner, every) = (learner.clone(), Duration::from_secs(config.learn.save_every_s.max(1)));
+        background.push(tokio::spawn(async move {
+            let mut tick = tokio::time::interval(every);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                let learner = learner.clone();
+                match tokio::task::spawn_blocking(move || learner.learner.save()).await {
+                    Ok(Err(e)) => tracing::warn!("Online learning: {e:#}"),
+                    Ok(Ok(true)) => tracing::debug!("Online learning: pack saved"),
+                    _ => {}
+                }
+            }
+        }));
+    }
     if let Some(explorer) = &explorer {
         if let Some(dir) = config.explorer.coverage_dir.clone() {
             background.push(tokio::spawn(fakenet_cli::watch_coverage(explorer.clone(), dir, capture.clone())));
@@ -448,6 +490,11 @@ async fn main() -> anyhow::Result<()> {
         task.abort();
     }
     if let Some(explorer) = &explorer {
+        match explorer.save_corpus() {
+            Ok(0) => {}
+            Ok(written) => tracing::info!("Explorer corpus: {written} new answers saved"),
+            Err(e) => tracing::warn!("Explorer corpus: {e:#}"),
+        }
         let path = capture.dir().join("explorer-map.json");
         if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&explorer.map()).unwrap_or_default()) {
             tracing::warn!("Could not write {}: {e}", path.display());
@@ -472,6 +519,12 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(outcome) = &outcome {
         println!("Run finished ({}): {}", outcome.reason, capture.dir().display());
+    }
+    if let Some(learner) = &learner {
+        match learner.learner.save() {
+            Ok(_) => tracing::info!("Online learning: {} answers this run, in {}", learner.learner.added(), learner.learner.path().display()),
+            Err(e) => tracing::warn!("Online learning: {e:#}"),
+        }
     }
     // Background tasks may still hold the capture: write its queue out now
     capture.flush();

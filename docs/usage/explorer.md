@@ -83,10 +83,19 @@ Slots:
 | `{offset}` | An NTP time shift |
 | `{mirror}` | The request's payload |
 | `{mutate}` | A mutated copy of the payload |
+| `{corpus}` | A mutated copy of a rewarded answer from the corpus (picked in proportion to its reward); without one, of the payload |
 | `{mz}` | A tiny PE stub |
 | `{session}` | The session ID |
 | `{param}` | The first IRC parameter |
 | `{meta:FIELD}` | A field of the event's `meta` |
+
+**Corpus.** An answer whose proposal earns a reward (new behaviour or coverage) joins the
+corpus, as in coverage-guided fuzzers: later proposals of the `http-corpus` and `raw-corpus`
+templates mutate what already worked instead of starting from nothing. Up to 256 entries
+(64 KiB each) are kept, the least rewarded dropped first. With `corpus_dir`, the corpus is
+loaded at start and saved at stop (one `<protocol>-<hash>.bin` file per answer; loaded
+answers start with a reward of 1), so it grows across runs and samples. The map's `corpus`
+field counts its answers by protocol.
 
 Functions, applied right to left: `b64`, `hex`, `json`, `urlenc`, `upper`, `lower`, `len8`,
 `len16be`, `len16le`, `len32be`, `len32le`, `bulk`. Write `{{` and `}}` for literal braces.

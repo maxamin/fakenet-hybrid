@@ -10,6 +10,7 @@
 #
 # Slots: {command} {key} {token} {string} {url} {domain} {path} {int} {ip} {port} {random}
 #   {offset} (NTP: a time shift) {mirror} (the request's payload) {mutate} (a mutated copy)
+#   {corpus} (a mutation of an earlier answer that earned reward: new behaviour or coverage)
 #   {mz} (a tiny PE stub) {session} {param} (first IRC parameter) {meta:FIELD}
 # Functions, applied right to left: {b64:x} {hex:x} {json:x} (JSON string escape)
 #   {urlenc:x} {upper:x} {lower:x} {len8:x} {len16be:x} {len16le:x} {len32be:x} {len32le:x}
@@ -97,6 +98,11 @@ protocol = "http"
 body = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\r\n{mutate}"
 
 [[template]]
+name = "http-corpus"
+protocol = "http"
+body = "{corpus}"
+
+[[template]]
 name = "http-empty"
 protocol = "http"
 body = "HTTP/1.1 204 No Content\r\n\r\n"
@@ -155,6 +161,11 @@ body = "{mirror}"
 name = "raw-mutate"
 protocol = "raw"
 body = "{mutate}"
+
+[[template]]
+name = "raw-corpus"
+protocol = "raw"
+body = "{corpus}"
 
 [[template]]
 name = "raw-command"

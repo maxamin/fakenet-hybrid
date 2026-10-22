@@ -12,7 +12,9 @@
 
 pub mod analyze;
 pub mod flows;
+pub mod generate;
 pub mod pcap;
+pub mod tls;
 pub mod transform;
 
 use std::collections::BTreeMap;
@@ -41,7 +43,14 @@ pub struct Pack {
     pub sources: Vec<String>,
     #[serde(default)]
     pub created: String,
+    /// TLS sessions learned from their decrypted plaintext (`--keylog`)
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub decrypted: u64,
     pub protocols: BTreeMap<String, ProtocolModel>,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -96,7 +105,7 @@ mod base64_bytes {
 
 impl Default for Pack {
     fn default() -> Self {
-        Pack { format: FORMAT.into(), version: PACK_VERSION, sources: Vec::new(), created: String::new(), protocols: BTreeMap::new() }
+        Pack { format: FORMAT.into(), version: PACK_VERSION, sources: Vec::new(), created: String::new(), decrypted: 0, protocols: BTreeMap::new() }
     }
 }
 
@@ -127,9 +136,35 @@ impl Pack {
         }
     }
 
+    /// Adds an answer already in its stored form (as a handler gives it) under `key`: what
+    /// online learning records
+    pub fn add_stored(&mut self, protocol: &str, key: &str, answer: &[u8]) {
+        let model = self.protocols.entry(protocol.to_string()).or_default();
+        model.exchanges += 1;
+        *model.answer_sizes.entry(usize::BITS - answer.len().leading_zeros()).or_default() += 1;
+        if model.keys.len() >= MAX_KEYS && !model.keys.contains_key(key) {
+            return;
+        }
+        let entry = model.keys.entry(key.to_string()).or_default();
+        entry.count += 1;
+        match answer.len() <= MAX_ANSWER {
+            true => entry.record(answer.to_vec(), 1),
+            false => entry.other += 1,
+        }
+    }
+
+    /// Writes the pack as JSON, atomically (a temporary file, then a rename)
+    pub fn save(&self, path: &Path) -> Result<()> {
+        let temporary = path.with_extension("json.tmp");
+        std::fs::write(&temporary, serde_json::to_vec_pretty(self)?).with_context(|| format!("writing {}", temporary.display()))?;
+        std::fs::rename(&temporary, path).with_context(|| format!("replacing {}", path.display()))?;
+        Ok(())
+    }
+
     /// Adds another pack's counts to this one
     pub fn merge(&mut self, other: &Pack) {
         self.sources.extend(other.sources.iter().cloned());
+        self.decrypted += other.decrypted;
         for (protocol, theirs) in &other.protocols {
             let ours = self.protocols.entry(protocol.clone()).or_default();
             ours.exchanges += theirs.exchanges;
@@ -177,17 +212,27 @@ impl Pack {
 
 /// Learns a pack from pcap or pcapng files
 pub fn learn(paths: &[std::path::PathBuf]) -> Result<Pack> {
-    learn_with(paths, &|_, _, _| None)
+    learn_with(paths, &|_, _, _| None, None)
 }
 
 /// `learn`, keying each request by `decode(protocol, server_port, request)` when it returns
 /// bytes (an encoded C2 message, decoded); answers are stored as sent
-pub fn learn_with(paths: &[std::path::PathBuf], decode: &dyn Fn(&str, u16, &[u8]) -> Option<Vec<u8>>) -> Result<Pack> {
+///
+/// With `keys` (an NSS key log), TLS conversations it has secrets for are decrypted and
+/// learned from their plaintext (see [`tls`]); the rest stay keyed as `tls`.
+pub fn learn_with(paths: &[std::path::PathBuf], decode: &dyn Fn(&str, u16, &[u8]) -> Option<Vec<u8>>, keys: Option<&tls::KeyLog>) -> Result<Pack> {
     let mut pack = Pack::default();
     for path in paths {
         let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
         let segments = pcap::read(&bytes).with_context(|| format!("reading {}", path.display()))?;
-        for exchange in flows::exchanges(&segments) {
+        let mut conversations = flows::conversations(&segments);
+        for conversation in conversations.iter_mut() {
+            if let Some(plain) = keys.and_then(|keys| tls::decrypt(conversation, keys)) {
+                *conversation = plain;
+                pack.decrypted += 1;
+            }
+        }
+        for exchange in conversations.iter().flat_map(flows::exchanges_of) {
             let transport = match exchange.transport {
                 pcap::Transport::Tcp => fakenet_schema::Transport::Tcp,
                 pcap::Transport::Udp => fakenet_schema::Transport::Udp,
@@ -203,6 +248,58 @@ pub fn learn_with(paths: &[std::path::PathBuf], decode: &dyn Fn(&str, u16, &[u8]
     let format = time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
     pack.created = time::OffsetDateTime::now_utc().format(&format).unwrap_or_default();
     Ok(pack)
+}
+
+/// Online learning: answers given during a run, added to a pack file. The file's earlier
+/// contents are kept (loaded at start), and `save` rewrites it with what was added since.
+pub struct Learner {
+    path: std::path::PathBuf,
+    pack: std::sync::Mutex<Pack>,
+    added: std::sync::atomic::AtomicU64,
+    saved: std::sync::atomic::AtomicU64,
+}
+
+impl Learner {
+    /// Opens (or starts) the pack at `path`, labelling what this run adds with `source`
+    pub fn open(path: &Path, source: &str) -> Result<Learner> {
+        let mut pack = match path.exists() {
+            true => Pack::load(path)?,
+            false => Pack::default(),
+        };
+        if !pack.sources.iter().any(|s| s == source) {
+            pack.sources.push(source.to_string());
+        }
+        Ok(Learner { path: path.to_path_buf(), pack: std::sync::Mutex::new(pack), added: Default::default(), saved: Default::default() })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Records one answer (in the handler's form) for a request with these keys (the most
+    /// specific is used)
+    pub fn record(&self, protocol: &str, keys: &[String], answer: &[u8]) {
+        let Some(key) = keys.first() else { return };
+        self.pack.lock().unwrap_or_else(|e| e.into_inner()).add_stored(protocol, key, answer);
+        self.added.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Answers recorded so far this run
+    pub fn added(&self) -> u64 {
+        self.added.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Writes the pack if anything was added since the last save; true when written
+    pub fn save(&self) -> Result<bool> {
+        let added = self.added();
+        if added == self.saved.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(false);
+        }
+        let pack = self.pack.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        pack.save(&self.path)?;
+        self.saved.store(added, std::sync::atomic::Ordering::Relaxed);
+        Ok(true)
+    }
 }
 
 /// A small, fast random source (xorshift): sampling answers needs no cryptography
@@ -237,16 +334,69 @@ pub struct Sampled {
     pub key: String,
     /// How often this answer was seen, over all answers under that key
     pub probability: f64,
+    /// Generated from the key's answers (`Model::generate_event`), not replayed
+    pub generated: bool,
 }
+
+/// Markov order for generated text
+const GENERATE_ORDER: usize = 4;
+/// Text models kept (one per protocol and key)
+const MAX_TEXT_MODELS: usize = 1_000;
 
 /// Loaded packs, merged, ready to answer
 pub struct Model {
     pack: Pack,
+    /// Text models for generation, trained on first use: (protocol, key) -> model
+    text_models: std::sync::Mutex<std::collections::HashMap<(String, String), std::sync::Arc<generate::TextModel>>>,
+}
+
+/// A model that reloads its packs when one changes on disk (online learning, or another
+/// `--learn --merge` run), checked at most every `RELOAD_CHECK`
+pub struct LiveModel {
+    paths: Vec<std::path::PathBuf>,
+    model: std::sync::RwLock<std::sync::Arc<Model>>,
+    stamps: std::sync::Mutex<(std::time::Instant, Vec<Option<std::time::SystemTime>>)>,
+}
+
+const RELOAD_CHECK: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn modified(paths: &[std::path::PathBuf]) -> Vec<Option<std::time::SystemTime>> {
+    paths.iter().map(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok()).collect()
+}
+
+impl LiveModel {
+    pub fn load(paths: &[std::path::PathBuf]) -> Result<LiveModel> {
+        let model = Model::load(paths)?;
+        Ok(LiveModel { paths: paths.to_vec(), model: std::sync::RwLock::new(std::sync::Arc::new(model)), stamps: std::sync::Mutex::new((std::time::Instant::now(), modified(paths))) })
+    }
+
+    /// The current model, reloaded first if a pack changed (a pack that fails to load is
+    /// reported and the previous model kept)
+    pub fn current(&self) -> std::sync::Arc<Model> {
+        let mut stamps = self.stamps.lock().unwrap_or_else(|e| e.into_inner());
+        if stamps.0.elapsed() >= RELOAD_CHECK {
+            stamps.0 = std::time::Instant::now();
+            let now = modified(&self.paths);
+            if now != stamps.1 {
+                stamps.1 = now;
+                match Model::load(&self.paths) {
+                    Ok(model) => *self.model.write().unwrap_or_else(|e| e.into_inner()) = std::sync::Arc::new(model),
+                    Err(e) => eprintln!("model packs changed but don't load ({e:#}); keeping the previous model"),
+                }
+            }
+        }
+        self.model.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Forces the next `current` to check the files (tests)
+    pub fn check_now(&self) {
+        self.stamps.lock().unwrap_or_else(|e| e.into_inner()).0 = std::time::Instant::now() - RELOAD_CHECK;
+    }
 }
 
 impl Model {
     pub fn new(pack: Pack) -> Model {
-        Model { pack }
+        Model { pack, text_models: Default::default() }
     }
 
     pub fn load(paths: &[std::path::PathBuf]) -> Result<Model> {
@@ -254,7 +404,7 @@ impl Model {
         for path in paths {
             pack.merge(&Pack::load(path)?);
         }
-        Ok(Model { pack })
+        Ok(Model::new(pack))
     }
 
     pub fn pack(&self) -> &Pack {
@@ -283,6 +433,48 @@ impl Model {
     }
 
     fn answer_keys(&self, protocol: &str, keys: Vec<String>, rng: &mut Rng, successful_only: bool) -> Option<Sampled> {
+        self.sample_keys(protocol, keys, rng, successful_only).map(|(sampled, _)| sampled)
+    }
+
+    /// `answer_event`, then (for text answers) a new answer generated from the chosen key's
+    /// answers (see `generate`); replayed when there is too little text to model
+    pub fn generate_event(&self, protocol: &str, payload: &[u8], meta: &serde_json::Value, rng: &mut Rng, successful_only: bool) -> Option<Sampled> {
+        let keys = analyze::for_protocol(protocol).keys_for_event(payload, meta);
+        let (sampled, candidates) = self.sample_keys(protocol, keys, rng, successful_only)?;
+        if protocol == "dns" {
+            return Some(sampled); // Structured answer lines: never generated
+        }
+        let texts: Vec<&[u8]> = match protocol {
+            "http" => candidates.iter().filter_map(|a| generate::split_http(a)).map(|(_, body)| body).filter(|b| generate::is_text(b)).collect(),
+            _ => candidates.iter().map(Vec::as_slice).filter(|a| generate::is_text(a)).collect(),
+        };
+        let model = {
+            let mut models = self.text_models.lock().unwrap_or_else(|e| e.into_inner());
+            let id = (protocol.to_string(), sampled.key.clone());
+            if !models.contains_key(&id) && models.len() >= MAX_TEXT_MODELS {
+                models.clear();
+            }
+            models.entry(id).or_insert_with(|| std::sync::Arc::new(generate::TextModel::train(&texts, GENERATE_ORDER))).clone()
+        };
+        if model.is_empty() {
+            return Some(sampled);
+        }
+        let bytes = match protocol {
+            "http" => {
+                let (head, body) = generate::split_http(&sampled.bytes)?;
+                if !generate::is_text(body) {
+                    return Some(sampled); // A binary body (an image, a payload): replayed
+                }
+                generate::http_with_body(head, &model.generate(rng))
+            }
+            _ if generate::is_text(&sampled.bytes) => generate::end_like(model.generate(rng), &texts),
+            _ => return Some(sampled),
+        };
+        Some(Sampled { bytes, generated: true, ..sampled })
+    }
+
+    /// The sampled answer and every candidate answer under the key it came from
+    fn sample_keys(&self, protocol: &str, keys: Vec<String>, rng: &mut Rng, successful_only: bool) -> Option<(Sampled, Vec<Vec<u8>>)> {
         let model = self.pack.protocols.get(protocol)?;
         let analyzer = analyze::for_protocol(protocol);
         let keep = |answer: &&Answer| !successful_only || !analyzer.is_failure(&answer.bytes);
@@ -303,7 +495,8 @@ impl Model {
             };
             let candidates: Vec<&Answer> = candidates.into_iter().filter(keep).collect();
             if let Some(sampled) = pick(&candidates, rng) {
-                return Some(Sampled { key, ..sampled });
+                let all = candidates.iter().map(|a| a.bytes.clone()).collect();
+                return Some((Sampled { key, ..sampled }, all));
             }
         }
         None
@@ -318,7 +511,7 @@ fn pick(candidates: &[&Answer], rng: &mut Rng) -> Option<Sampled> {
     let mut point = rng.below(total);
     for answer in candidates {
         if point < answer.count {
-            return Some(Sampled { bytes: answer.bytes.clone(), key: String::new(), probability: answer.count as f64 / total as f64 });
+            return Some(Sampled { bytes: answer.bytes.clone(), key: String::new(), probability: answer.count as f64 / total as f64, generated: false });
         }
         point -= answer.count;
     }
@@ -413,4 +606,66 @@ mod tests {
         assert_eq!(pack.protocols["http"].keys["GET /beacon/{n}"].answers[0].bytes, http("200 OK", "sleep 60"));
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn learns_online_and_reloads() {
+        let dir = std::env::temp_dir().join(format!("fakenet-online-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("live.json");
+        // An existing pack is kept and added to
+        let mut first = Pack::default();
+        first.add("smtp", b"EHLO x\r\n", b"250 ok\r\n");
+        first.save(&path).unwrap();
+        let live = LiveModel::load(std::slice::from_ref(&path)).unwrap();
+        let mut rng = Rng::new(3);
+        assert!(live.current().answer("raw", b"hello", &mut rng).is_none());
+
+        let learner = Learner::open(&path, "run-1").unwrap();
+        assert!(!learner.save().unwrap()); // Nothing added yet
+        learner.record("raw", &["text:HELLO".into(), "*".into()], b"welcome back");
+        assert!(learner.save().unwrap());
+        let saved = Pack::load(&path).unwrap();
+        assert_eq!(saved.protocols["smtp"].keys["EHLO"].count, 1);
+        assert_eq!(saved.protocols["raw"].keys["text:HELLO"].answers[0].bytes, b"welcome back");
+        assert!(saved.sources.contains(&"run-1".to_string()));
+
+        // The responder's model picks the change up
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&path, std::fs::read(&path).unwrap()).unwrap(); // A fresh modification time
+        live.check_now();
+        assert_eq!(live.current().answer("raw", b"hello there", &mut rng).unwrap().bytes, b"welcome back");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+
+    #[test]
+    fn generates_new_http_bodies_and_line_replies() {
+        let mut pack = Pack::default();
+        for body in ["your client is up to date, check again in one hour", "a new update is ready for your client, download it now", "the update server is busy, check again in a few minutes"] {
+            pack.add("http", b"GET /update HTTP/1.1\r\n", &http("200 OK", body));
+        }
+        for reply in ["250 mail.example greets you\r\n", "250 mail.example is ready for you\r\n"] {
+            pack.add("smtp", b"EHLO x\r\n", reply.as_bytes());
+        }
+        pack.add("http", b"GET /logo.png HTTP/1.1\r\n", b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n\x89PNG");
+        let model = Model::new(pack);
+        let mut rng = Rng::new(4);
+        let meta = serde_json::Value::Null;
+        let mut bodies = std::collections::BTreeSet::new();
+        for _ in 0..30 {
+            let answer = model.generate_event("http", b"GET /update HTTP/1.1\r\n", &meta, &mut rng, true).unwrap();
+            assert!(answer.generated);
+            let (head, body) = generate::split_http(&answer.bytes).unwrap();
+            assert!(String::from_utf8_lossy(head).contains(&format!("Content-Length: {}", body.len())));
+            bodies.insert(body.to_vec());
+        }
+        assert!(bodies.len() > 5, "{} distinct bodies", bodies.len());
+        let reply = model.generate_event("smtp", b"EHLO y\r\n", &meta, &mut rng, true).unwrap();
+        assert!(reply.bytes.starts_with(b"250 ") && reply.bytes.ends_with(b"\r\n"), "{:?}", String::from_utf8_lossy(&reply.bytes));
+        // A binary body is replayed as recorded
+        let image = model.generate_event("http", b"GET /logo.png HTTP/1.1\r\n", &meta, &mut rng, true).unwrap();
+        assert!(!image.generated && image.bytes.ends_with(b"\x89PNG"));
+    }
+
 }

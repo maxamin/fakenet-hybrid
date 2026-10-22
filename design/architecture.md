@@ -9,7 +9,7 @@ flowchart LR
         diverter["diverter<br/>iptables / WinDivert"] --> listeners["listeners<br/>30 protocol handlers"]
         listeners --> session["Session::decide_with_default"]
         session --> link["link<br/>sealed JSON over WebSocket / HTTP"]
-        session --> explorer["explorer<br/>templates + rewards"]
+        session --> explorer["explorer<br/>templates + rewards + corpus"]
         session --> responders["responders<br/>model, plugins"]
         session --> manual["live manual mode"]
         session --> hooks["hooks<br/>pause, dump, command"]
@@ -53,6 +53,9 @@ sequenceDiagram
         S->>M: hold(event, proposed answer)
         M-->>S: proposed / edited / close (or timeout)
     end
+    opt [learn] into = PACK, answer's source in sources
+        S->>S: OnlineLearner::observe(event, source, answer)
+    end
     S-->>H: answer (or None: the handler's default)
 ```
 
@@ -63,9 +66,11 @@ flowchart LR
     run["Analysis runs<br/>(rules, explorer, plugins, manual)"] --> pcap["traffic.pcap<br/>capture/previous/*"]
     fuzz["Fuzzing, REA runs"] --> pcap
     public["Public datasets (pcap)"] --> learner
-    pcap --> learner["fakenet-nucleus --learn<br/>reassemble, identify, analyse"]
+    keylog["tls-keys.log / SSLKEYLOGFILE"] -->|--keylog| learner
+    pcap --> learner["fakenet-nucleus --learn<br/>reassemble, decrypt TLS, identify, analyse"]
     learner --> pack["model pack (JSON)<br/>per protocol and request key:<br/>answers and counts"]
-    pack --> responder["[[responder]] kind = model<br/>weighted sampling"]
+    run -->|"[learn] (online)"| pack
+    pack -->|"reloaded on change"| responder["[[responder]] kind = model<br/>weighted sampling, or Markov generation"]
     pack --> generators["generator plugins<br/>(markov_bodies.py...)"]
     responder --> run
     generators --> run

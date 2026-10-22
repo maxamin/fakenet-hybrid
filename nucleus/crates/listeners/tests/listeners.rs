@@ -372,7 +372,7 @@ async fn responders_answer_what_the_rules_leave() {
         .try_into()
         .unwrap();
     let listeners = [listener("http", Some(Protocol::Http), Transport::Tcp, false), listener("raw", Some(Protocol::Raw), Transport::Tcp, false)];
-    let nucleus = Nucleus::start_responding("responders", LinkConfig::default(), &listeners, fakenet_listeners::Defaults::default(), None, fakenet_listeners::LimitsConfig::default(), None, None, build(&configs).unwrap()).await;
+    let nucleus = Nucleus::start_responding("responders", LinkConfig::default(), &listeners, fakenet_listeners::Defaults::default(), None, fakenet_listeners::LimitsConfig::default(), None, None, build(&configs).unwrap(), None).await;
 
     let mut seen = std::collections::BTreeMap::new();
     for _ in 0..40 {
@@ -386,4 +386,36 @@ async fn responders_answer_what_the_rules_leave() {
     let records = nucleus.kinds("responded");
     assert!(records.iter().any(|r| r["route"] == "model:GET /gate/{n}" && r["detail"]["probability"].as_f64().is_some()));
     assert!(records.iter().any(|r| r["responder"] == "py" && r["route"] == "py:echo"));
+}
+
+#[tokio::test]
+async fn online_learning_turns_rule_answers_into_a_model() {
+    use fakenet_listeners::responders::{build, LearnSource, OnlineLearner, ResponderConfig};
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("online-learning");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let pack = dir.join("live.json");
+    // Run 1: the daemon's rules answer; the learner records them
+    let learner = Arc::new(OnlineLearner { learner: fakenet_model::Learner::open(&pack, "run-1").unwrap(), sources: vec![LearnSource::Rules] });
+    let listeners = [listener("http", Some(Protocol::Http), Transport::Tcp, false)];
+    {
+        let nucleus = Nucleus::start_responding("online-1", fake_daemon(Duration::ZERO, camel_like).await, &listeners, fakenet_listeners::Defaults::default(), None, fakenet_listeners::LimitsConfig::default(), None, None, Vec::new(), Some(learner.clone())).await;
+        wait_connected().await;
+        let page = http_get(nucleus.address("http"), "/tasks/41").await;
+        assert!(page.contains("task=sleep"), "{page}");
+    }
+    assert_eq!(learner.learner.added(), 1);
+    assert!(learner.learner.save().unwrap());
+
+    // Run 2: no daemon; a model responder over the learned pack answers the same way (the rule
+    // answers "418 I'm a teapot", a 4xx: kept with outcomes = "all")
+    let configs: Vec<ResponderConfig> = toml::from_str::<toml::Table>(&format!("[[responder]]\nname = \"live\"\nkind = \"model\"\noutcomes = \"all\"\npacks = [{:?}]\n", pack.display().to_string()))
+        .unwrap()["responder"]
+        .clone()
+        .try_into()
+        .unwrap();
+    let nucleus = Nucleus::start_responding("online-2", LinkConfig::default(), &listeners, fakenet_listeners::Defaults::default(), None, fakenet_listeners::LimitsConfig::default(), None, None, build(&configs).unwrap(), None).await;
+    let page = http_get(nucleus.address("http"), "/tasks/99").await;
+    assert!(page.contains("task=sleep"), "{page}");
+    assert_eq!(nucleus.kinds("responded")[0]["route"], "live:GET /tasks/{n}");
 }

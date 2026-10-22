@@ -160,6 +160,7 @@ to the first `auto` listener of its transport.
 | `coverage_dir` | none | Folder a tracer writes drcov logs or JSONL coverage into |
 | `module`, `image_base` | none, `0x400000` | Map coverage addresses to REA functions |
 | `protocols` | `[]` (all with templates) | Restrict exploration to these protocols |
+| `corpus_dir` | unset | Keep rewarded answers here across runs, for the `{corpus}` slot (see [the explorer](../usage/explorer.md)) |
 
 See {doc}`../usage/explorer`.
 
@@ -223,4 +224,16 @@ Answer sources tried, in order, for what the rules and the explorer leave. See
 | `key_transforms` | `[]` | `model`: decoding steps applied to a request before looking it up, as the pack was learned with (`--learn --transform`) |
 | `command` | `[]` | `plugin`: the program and its arguments, run without a shell |
 | `timeout_ms` | 150 | `plugin`: answers later than this are dropped |
+| `generate` | false | `model`: generate text answers (HTTP bodies, line replies) from a Markov model of the recorded ones instead of replaying them |
 | `rate` | 1.0 | Share of matching requests it answers |
+
+## `[learn]`: online learning
+
+Answers given during the run, added to a model pack. See
+[learning online](../usage/learning-and-responders.md#learning-online).
+
+| Key | Default | Meaning |
+|---|---|---|
+| `into` | unset (off) | The pack file; created if missing, added to if present; relative to the config file |
+| `sources` | `["rules", "manual", "plugins"]` | Which answers are learned; `explorer` is also accepted |
+| `save_every_s` | 30 | Seconds between saves (only when something was added); always saved at stop |

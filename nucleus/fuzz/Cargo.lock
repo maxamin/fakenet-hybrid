@@ -605,6 +605,7 @@ dependencies = [
  "fakenet-schema",
  "fakenet-sniffer",
  "hickory-proto",
+ "ring",
  "serde",
  "serde_json",
  "time",

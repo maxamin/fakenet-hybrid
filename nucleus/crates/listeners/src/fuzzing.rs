@@ -52,6 +52,7 @@ fn harness() -> &'static Harness {
                 manual: None,
                 hooks: None,
                 responders: Vec::new(),
+                learner: None,
             });
             (ctx, tokio::net::UdpSocket::bind("127.0.0.1:0").await.expect("socket"))
         });

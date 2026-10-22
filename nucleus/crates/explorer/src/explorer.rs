@@ -42,6 +42,9 @@ pub struct ExplorerConfig {
     pub image_base: Option<String>,
     /// Protocols to explore (empty: all with templates)
     pub protocols: Vec<String>,
+    /// Answers that earned new behaviour or coverage, kept across runs: loaded at start,
+    /// written at stop (`save_corpus`); unset: kept for this run only
+    pub corpus_dir: Option<PathBuf>,
 }
 
 impl Default for ExplorerConfig {
@@ -58,6 +61,7 @@ impl Default for ExplorerConfig {
             coverage_dir: None,
             module: None,
             image_base: None,
+            corpus_dir: None,
             protocols: Vec::new(),
         }
     }
@@ -91,6 +95,9 @@ struct Pending {
     template: String,
     context: String,
     tokens: Vec<String>,
+    protocol: String,
+    /// The answer itself, for the corpus (cut at MAX_CORPUS_ANSWER)
+    response: Vec<u8>,
     at: Instant,
     /// Wall-clock time, to match timestamped coverage
     wall: std::time::SystemTime,
@@ -113,6 +120,7 @@ struct State {
     aliases: HashMap<String, String>,
     proposals: u64,
     observed: u64,
+    corpus: Vec<CorpusEntry>,
 }
 
 pub struct Explorer {
@@ -123,6 +131,20 @@ pub struct Explorer {
 }
 
 const MAX_PENDING: usize = 32;
+/// Answers kept in the corpus (the least rewarded go first)
+const MAX_CORPUS: usize = 256;
+/// Largest answer kept in it
+const MAX_CORPUS_ANSWER: usize = 64 * 1024;
+
+/// An answer that earned reward: mutated by the `{corpus}` slot
+#[derive(Clone)]
+struct CorpusEntry {
+    protocol: String,
+    response: Vec<u8>,
+    reward: f64,
+    /// Loaded from corpus_dir (already on disk)
+    saved: bool,
+}
 /// Behaviour signatures remembered: they include destinations, so a scanning sample would
 /// otherwise grow the set for the whole run. Past it, nothing more counts as new.
 const MAX_SEEN: usize = 100_000;
@@ -188,6 +210,7 @@ impl Explorer {
             aliases: HashMap::new(),
             proposals: 0,
             observed: 0,
+            corpus: Vec::new(),
         };
         Explorer { config, templates, functions, state: Mutex::new(state) }
     }
@@ -240,7 +263,7 @@ impl Explorer {
     #[allow(clippy::too_many_arguments)]
     fn credit_at(&self, state: &mut State, actor: &str, now: Instant, when: Option<std::time::SystemTime>, reward: f64, mut record: impl FnMut(&mut TemplateStats), signature: Option<&str>) {
         let window = Duration::from_millis(self.config.window_ms);
-        let recent: Vec<(String, String, Vec<String>)> = state
+        let recent: Vec<(String, String, Vec<String>, String, Vec<u8>)> = state
             .pending
             .get(actor)
             .map(|queue| {
@@ -251,14 +274,20 @@ impl Explorer {
                         Some(when) => p.wall <= when && when.duration_since(p.wall).unwrap_or_default() <= window,
                         None => now.duration_since(p.at) <= window,
                     })
-                    .map(|p| (p.template.clone(), p.context.clone(), p.tokens.clone()))
+                    .map(|p| (p.template.clone(), p.context.clone(), p.tokens.clone(), p.protocol.clone(), p.response.clone()))
                     .collect()
             })
             .unwrap_or_default();
-        if let (Some(signature), Some((template, _, _))) = (signature, recent.first()) {
+        if let (Some(signature), Some((template, _, _, _, _))) = (signature, recent.first()) {
             state.first_seen_after.insert(signature.to_string(), template.clone());
         }
-        for (rank, (template, context, tokens)) in recent.into_iter().enumerate() {
+        // The likeliest cause joins the corpus, to be mutated further ({corpus})
+        if let Some((_, _, _, protocol, response)) = recent.first() {
+            if reward > 0.0 && !response.is_empty() {
+                add_to_corpus(state, protocol, response, reward);
+            }
+        }
+        for (rank, (template, context, tokens, _, _)) in recent.into_iter().enumerate() {
             let share = reward * 0.5f64.powi(rank as i32);
             state.arms.entry((context, template.clone())).or_default().reward += share;
             let stats = state.templates.entry(template).or_default();
@@ -314,7 +343,8 @@ impl Explorer {
             }
         }
         let queue = state.pending.entry(actor).or_default();
-        queue.push_back(Pending { template: template.name.clone(), context, tokens: tokens.clone(), at: Instant::now(), wall: std::time::SystemTime::now() });
+        let kept = response[..response.len().min(MAX_CORPUS_ANSWER)].to_vec();
+        queue.push_back(Pending { template: template.name.clone(), context, tokens: tokens.clone(), protocol: protocol.to_string(), response: kept, at: Instant::now(), wall: std::time::SystemTime::now() });
         while queue.len() > MAX_PENDING {
             queue.pop_front();
         }
@@ -392,6 +422,7 @@ impl Explorer {
             "templates": templates,
             "tokens": tokens.iter().take(50).map(|(t, r)| json!({ "token": t, "reward": round(**r) })).collect::<Vec<_>>(),
             "first_seen_after": state.first_seen_after,
+            "corpus": state.corpus.iter().fold(BTreeMap::<String, usize>::new(), |mut sizes, e| { *sizes.entry(e.protocol.clone()).or_default() += 1; sizes }),
             "functions": { "known": known.len(), "reached": state.reached, "unreached": unreached },
             "hints": {
                 "rea_analysed": state.hints.analysed,
@@ -501,6 +532,73 @@ fn shape(payload: &[u8]) -> String {
     format!("{size}:{start}")
 }
 
+fn add_to_corpus(state: &mut State, protocol: &str, response: &[u8], reward: f64) {
+    match state.corpus.iter_mut().find(|e| e.protocol == protocol && e.response == response) {
+        Some(entry) => entry.reward += reward,
+        None => {
+            if state.corpus.len() >= MAX_CORPUS {
+                if let Some(weakest) = state.corpus.iter().enumerate().min_by(|a, b| a.1.reward.total_cmp(&b.1.reward)).map(|(i, _)| i) {
+                    state.corpus.swap_remove(weakest);
+                }
+            }
+            state.corpus.push(CorpusEntry { protocol: protocol.to_string(), response: response.to_vec(), reward, saved: false });
+        }
+    }
+}
+
+/// A stable file name for a corpus answer: protocol and FNV-1a hash
+fn corpus_file_name(protocol: &str, response: &[u8]) -> String {
+    let hash = response.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3));
+    let protocol: String = protocol.chars().filter(char::is_ascii_alphanumeric).collect();
+    format!("{protocol}-{hash:016x}.bin")
+}
+
+impl Explorer {
+    /// Loads the corpus answers in `corpus_dir` (`<protocol>-<hash>.bin`); returns how many
+    pub fn load_corpus(&self) -> anyhow::Result<usize> {
+        let Some(dir) = &self.config.corpus_dir else { return Ok(0) };
+        let Ok(entries) = std::fs::read_dir(dir) else { return Ok(0) };
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut loaded = 0;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some((protocol, _)) = name.strip_suffix(".bin").and_then(|n| n.split_once('-')) else { continue };
+            let Ok(response) = std::fs::read(entry.path()) else { continue };
+            if response.is_empty() || response.len() > MAX_CORPUS_ANSWER || state.corpus.len() >= MAX_CORPUS {
+                continue;
+            }
+            state.corpus.push(CorpusEntry { protocol: protocol.to_string(), response, reward: 1.0, saved: true });
+            loaded += 1;
+        }
+        Ok(loaded)
+    }
+
+    /// Writes the corpus answers not yet in `corpus_dir`; returns how many
+    pub fn save_corpus(&self) -> anyhow::Result<usize> {
+        let Some(dir) = &self.config.corpus_dir else { return Ok(0) };
+        std::fs::create_dir_all(dir).map_err(|e| anyhow::anyhow!("creating {}: {e}", dir.display()))?;
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut written = 0;
+        for entry in state.corpus.iter_mut().filter(|e| !e.saved) {
+            let path = dir.join(corpus_file_name(&entry.protocol, &entry.response));
+            std::fs::write(&path, &entry.response).map_err(|e| anyhow::anyhow!("writing {}: {e}", path.display()))?;
+            entry.saved = true;
+            written += 1;
+        }
+        Ok(written)
+    }
+
+    /// Answers in the corpus, by protocol
+    pub fn corpus_sizes(&self) -> BTreeMap<String, usize> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut sizes = BTreeMap::new();
+        for entry in &state.corpus {
+            *sizes.entry(entry.protocol.clone()).or_default() += 1;
+        }
+        sizes
+    }
+}
+
 /// Fills a template's slots for one request
 struct Filler<'a> {
     state: &'a mut State,
@@ -601,6 +699,24 @@ impl Source for Filler<'_> {
             "random" => (0..8).map(|_| b"abcdefghijklmnopqrstuvwxyz0123456789"[self.state.rng.below(36)]).collect(),
             "mirror" => self.event.payload.clone(),
             "mutate" => templates::mutate(&self.event.payload, &mut self.state.rng),
+            // A mutation of an answer that earned reward for this protocol (weighted by its
+            // reward); without one yet, of the request, like {mutate}
+            "corpus" => {
+                let protocol = self.event.protocol.name();
+                let candidates: Vec<(f64, Vec<u8>)> = self.state.corpus.iter().filter(|e| e.protocol == protocol).map(|e| (e.reward, e.response.clone())).collect();
+                let total: f64 = candidates.iter().map(|(r, _)| r).sum();
+                let base = match total > 0.0 {
+                    true => {
+                        let mut point = self.state.rng.unit() * total;
+                        candidates.iter().find(|(reward, _)| {
+                            point -= reward;
+                            point <= 0.0
+                        }).or(candidates.last()).map(|(_, r)| r.clone()).unwrap_or_default()
+                    }
+                    false => self.event.payload.clone(),
+                };
+                templates::mutate(&base, &mut self.state.rng)
+            }
             "mz" => templates::mz_stub(),
             "session" => self.event.session_id.clone().into_bytes(),
             "param" => self.event.meta.get("params").and_then(|p| p.get(0)).and_then(Value::as_str).unwrap_or("#c2").as_bytes().to_vec(),

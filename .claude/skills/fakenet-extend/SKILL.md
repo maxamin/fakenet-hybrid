@@ -17,8 +17,10 @@ Read `design/architecture.md` and `design/extension-points.md` first: they are t
 | Transforms | `model/src/transform.rs` | shared by `--decode`, `--learn --transform`, `key_transforms` |
 | Responders | `listeners/src/responders.rs` | `Responder::respond(event, default) -> Option<Proposal>`, fast and bounded |
 | Plugins | `plugins/` | JSON lines on stdin/stdout (`plugins/README.md`); helper `fakenet_plugin.py` |
-| Transforms | `cli/src/infer.rs` | `--decode` steps: base64, hex, xor, rc4, skip |
-| Explorer | `nucleus/crates/explorer` | template arms with rewards and coverage; `{mutate}` byte mutator |
+| Online learning | `listeners/src/responders.rs` (`OnlineLearner`), `model::Learner` | `[learn] into`; answers of rules, manual mode and `learnable()` responders are added to a pack; `LiveModel` reloads it |
+| Generation | `model/src/generate.rs` | order-4 byte Markov per key; `generate = true` on a model responder; DNS and binary replayed |
+| TLS decryption | `model/src/tls.rs` | `--learn --keylog`: TLS 1.3 and TLS 1.2 AEAD from NSS key logs |
+| Explorer | `nucleus/crates/explorer` | template arms with rewards and coverage; `{mutate}` byte mutator; `{corpus}` rewarded answers (`corpus_dir`) |
 
 Order of answers for one request: rules (daemon) -> explorer -> responders (config order)
 -> live manual mode (may override) -> the handler's default.
@@ -36,10 +38,13 @@ Order of answers for one request: rules (daemon) -> explorer -> responders (conf
   an `Analyzer`; paste it into `analyze.rs`, add it to `analyzers()`, test keys and answers.
   Keys must generalise (`normalize_segment`) and never carry raw sample data.
 - **New decoder:** `python3 scripts/scaffold.py transform NAME` prints the steps for
-  `infer.rs`; test it with a published vector (as RC4's).
+  `model/src/transform.rs`; test it with a published vector (as RC4's).
 - **Learn and use a model:** `fakenet-nucleus --learn capture/ datasets/*.pcap -o model.json`,
   `--model-info model.json`, then `[[responder]] kind = "model"`, `packs = ["model.json"]`
   (`outcomes = "all"` to include failures). pcap and pcapng both work; `--merge` adds to a pack.
+- **HTTPS C2:** `--learn capture/ --keylog capture/tls-keys.log` learns the decrypted HTTP.
+- **Learning during a run:** `[learn] into = "live.json"` and the same file in a model
+  responder's `packs`; `generate = true` for varied text answers.
 - **Encoded C2:** find the framing and key with `--infer`, then `--learn ... --transform skip:N
   --transform xor:KEY --only ":PORT"` and the same steps as the responder's `key_transforms`.
 

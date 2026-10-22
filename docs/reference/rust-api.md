@@ -160,12 +160,16 @@ Protocol modules (each `handle` serves one session; see {doc}`protocols`):
 | Item | Description |
 |---|---|
 | `pcap::{read, parse_ip, Segment, Transport}` | Classic pcap (raw, Ethernet/VLAN, Linux cooked) down to TCP/UDP segments |
-| `flows::{exchanges, Exchange}` | TCP reassembly per direction, UDP flows, request/answer pairs (bounded) |
+| `flows::{conversations, exchanges, exchanges_of, Conversation, Exchange}` | TCP reassembly per direction, UDP flows, request/answer pairs (bounded) |
+| `tls::{KeyLog::{parse, load, len, merge}, decrypt}` | NSS key logs; a TLS 1.3 / TLS 1.2 AEAD conversation decrypted to its application data |
 | `analyze::{Analyzer, analyzers, for_protocol, identify, GREETING}` | Per-protocol keys, stored answers, failures |
-| `Pack::{add, merge, load, summary}`, `ProtocolModel`, `KeyModel`, `Answer` | The model pack format |
-| `learn(paths)`, `learn_with(paths, decode)` | pcap/pcapng files -> `Pack` (optionally keying requests by their decoded content) |
+| `Pack::{add, add_keyed, add_stored, save, merge, load, summary}`, `ProtocolModel`, `KeyModel`, `Answer` | The model pack format (`save` is atomic) |
+| `learn(paths)`, `learn_with(paths, decode, keys)` | pcap/pcapng files -> `Pack` (optionally keying requests by their decoded content, and decrypting TLS with a key log) |
+| `Learner::{open, record, added, save, path}` | Online learning: answers added to a pack file during a run |
+| `LiveModel::{load, current, check_now}` | A `Model` reloaded when its pack files change |
+| `generate::{TextModel::{train, generate}, is_text, split_http, http_with_body, end_like}` | Order-k byte Markov generation of text answers |
 | `transform::{Transform, parse_transform, apply}` | Decoding steps shared by `--decode`, `--learn` and `key_transforms` |
-| `Model::{new, load, answer, answer_with, answer_event, knows}`, `Sampled`, `Rng` | Weighted sampling of answers (`answer_event`: keys from a live event's payload and meta) |
+| `Model::{new, load, answer, answer_with, answer_event, generate_event, knows}`, `Sampled`, `Rng` | Weighted sampling of answers (`answer_event`: keys from a live event's payload and meta) |
 
 ## `cli` (`cli/src/`)
 

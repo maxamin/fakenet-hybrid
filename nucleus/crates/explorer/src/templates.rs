@@ -67,7 +67,7 @@ struct Probe;
 
 impl Source for Probe {
     fn value(&mut self, name: &str) -> Option<Vec<u8>> {
-        let known = ["command", "key", "token", "string", "url", "domain", "path", "int", "ip", "port", "random", "offset", "mirror", "mutate", "mz", "session", "param"];
+        let known = ["command", "key", "token", "string", "url", "domain", "path", "int", "ip", "port", "random", "offset", "mirror", "mutate", "corpus", "mz", "session", "param"];
         (known.contains(&name) || name.starts_with("meta:")).then(|| b"x".to_vec())
     }
 }

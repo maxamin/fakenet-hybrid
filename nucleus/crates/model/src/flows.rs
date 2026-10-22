@@ -34,7 +34,6 @@ struct Direction {
 
 struct Flow {
     transport: Transport,
-    client: SocketAddr,
     server: SocketAddr,
     /// (from the client?, bytes), consecutive same-direction data merged
     messages: Vec<(bool, Vec<u8>)>,
@@ -54,8 +53,23 @@ impl Flow {
     }
 }
 
+/// One flow's data: who sent what, in order (consecutive same-direction data merged for TCP;
+/// one message per datagram for UDP)
+#[derive(Debug, Clone, PartialEq)]
+pub struct Conversation {
+    pub transport: Transport,
+    pub server_port: u16,
+    /// (from the client?, bytes)
+    pub messages: Vec<(bool, Vec<u8>)>,
+}
+
 /// The exchanges of a capture, flow by flow in order of their first packet
 pub fn exchanges(segments: &[Segment]) -> Vec<Exchange> {
+    conversations(segments).iter().flat_map(exchanges_of).collect()
+}
+
+/// The conversations of a capture, flow by flow in order of their first packet
+pub fn conversations(segments: &[Segment]) -> Vec<Conversation> {
     let mut flows: Vec<Flow> = Vec::new();
     let mut index: HashMap<(Transport, SocketAddr, SocketAddr), usize> = HashMap::new();
     for segment in segments {
@@ -71,7 +85,7 @@ pub fn exchanges(segments: &[Segment]) -> Vec<Exchange> {
                     continue;
                 }
                 let (client, server) = if reversed { (segment.dst, segment.src) } else { (segment.src, segment.dst) };
-                flows.push(Flow { transport: segment.transport, client, server, messages: Vec::new(), to_server: Direction::default(), to_client: Direction::default() });
+                flows.push(Flow { transport: segment.transport, server, messages: Vec::new(), to_server: Direction::default(), to_client: Direction::default() });
                 index.insert((segment.transport, client, server), flows.len() - 1);
                 (flows.len() - 1, !reversed)
             }
@@ -107,30 +121,32 @@ pub fn exchanges(segments: &[Segment]) -> Vec<Exchange> {
         flow.add(from_client, data);
     }
 
+    flows.into_iter().map(|flow| Conversation { transport: flow.transport, server_port: flow.server.port(), messages: flow.messages }).collect()
+}
+
+/// A conversation cut into exchanges: each client message with the server's next one; server
+/// data before any request is a greeting (an empty request)
+pub fn exchanges_of(conversation: &Conversation) -> Vec<Exchange> {
+    let first_client_bytes = conversation.messages.iter().find(|(c, _)| *c).map(|(_, b)| b[..b.len().min(4096)].to_vec()).unwrap_or_default();
     let mut out = Vec::new();
-    for flow in flows {
-        let first_client_bytes = flow.messages.iter().find(|(c, _)| *c).map(|(_, b)| b[..b.len().min(4096)].to_vec()).unwrap_or_default();
-        let mut pending: Option<Vec<u8>> = None;
-        let mut started = false;
-        for (from_client, bytes) in flow.messages {
-            match from_client {
-                true => {
-                    started = true;
-                    pending = Some(bytes);
-                }
-                false => {
-                    // Server data before any request: a greeting
-                    let request = match (&pending, started) {
-                        (Some(_), _) => pending.take().unwrap_or_default(),
-                        (None, false) => Vec::new(),
-                        (None, true) => continue, // A second server message: already answered
-                    };
-                    started = true;
-                    out.push(Exchange { transport: flow.transport, server_port: flow.server.port(), request, response: bytes, first_client_bytes: first_client_bytes.clone() });
-                }
+    let mut pending: Option<&Vec<u8>> = None;
+    let mut started = false;
+    for (from_client, bytes) in &conversation.messages {
+        match from_client {
+            true => {
+                started = true;
+                pending = Some(bytes);
+            }
+            false => {
+                let request = match (pending.take(), started) {
+                    (Some(request), _) => request.clone(),
+                    (None, false) => Vec::new(), // A greeting
+                    (None, true) => continue,     // A second server message: already answered
+                };
+                started = true;
+                out.push(Exchange { transport: conversation.transport, server_port: conversation.server_port, request, response: bytes.clone(), first_client_bytes: first_client_bytes.clone() });
             }
         }
-        let _ = flow.client;
     }
     out
 }

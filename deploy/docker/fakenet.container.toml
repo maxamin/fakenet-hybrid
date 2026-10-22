@@ -62,6 +62,14 @@ timeout_ms = 120000              # an unanswered held request gets the proposed 
 # protocols = ["raw"]
 # timeout_ms = 150
 
+# Online learning: answers given during the run (rules, manual mode, plugins) are added to
+# this pack; a model responder listing it in `packs` answers from it as it grows. Add
+# `generate = true` to a model responder for new text answers instead of replays.
+# [learn]
+# into = "live-model.json"
+# sources = ["rules", "manual", "plugins"]    # also "explorer"
+# save_every_s = 30
+
 [yara]                           # scan every saved payload (bodies, uploads, emails) with YARA
 rules = []                       # rule files or folders of *.yar/*.yara, e.g. ["yara-rules"]
 # yara = "yara"                  # the stock YARA tools (on PATH by default; yara.exe/yarac.exe on Windows)
@@ -315,3 +323,4 @@ enabled = false
 # image_base = "0x400000"        # REA's image base, for rebasing drcov offsets
 # templates = []                 # extra template files (format: crates/explorer/templates/default.toml)
 # protocols = []                 # limit exploration (empty: every protocol with templates)
+# corpus_dir = "explorer-corpus" # keep rewarded answers across runs, for the {corpus} slot

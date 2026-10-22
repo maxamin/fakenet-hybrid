@@ -32,6 +32,22 @@ interface.
       keys encoded C2 messages by their decoded command; answers stay as sent
 - [x] R5 Tests, fuzz the new parsers, docs, commit and push
 
+## Round 3
+
+- [x] G1 Online learning: answers given during a run by rules, manual mode or plugins are
+      learned into a pack (`[learn]`), saved periodically and at stop; model responders
+      reload packs that change on disk
+- [x] G2 Generating, not only replaying: a model responder with `generate = true` builds
+      new text answers (HTTP bodies, line replies, text C2) from a character Markov model of
+      the recorded answers, keeping the recorded HTTP head
+- [x] G3 Coverage-guided corpus: explorer answers that earned new behaviour or coverage are
+      kept (bounded, saved to `explorer-corpus/`, reloaded next run) and mutated by a new
+      `corpus` template
+- [x] G4 TLS decryption while learning: `--learn ... --keylog tls-keys.log` decrypts TLS 1.3
+      and TLS 1.2 AEAD sessions (AES-GCM, ChaCha20-Poly1305) from NSS key logs, so wire.pcap
+      and encrypted datasets yield their HTTP
+- [x] G5 Tests, fuzzing, docs, commit and push
+
 ## Notes
 
 - Verified on real data: Wireshark's public dns.cap (Ethernet) and http_with_jpegs.cap, plus
@@ -50,6 +66,10 @@ interface.
 
 ## Later
 
-- Online learning (update packs from live traffic), TLS decryption while learning (key log)
-- Grammar-aware synthesis from pack statistics (not only replay), coverage-guided corpus
-- More analysers (SMB, LDAP, MQTT, CoAP fields)
+- Grammar-aware synthesis (structure from `--infer`, beyond character models)
+- TLS 1.2 CBC suites and TLS over UDP (DTLS, QUIC) in the learner
+- Round 3: TLS decryption checked against rustls sessions for all six AEAD suites (TLS 1.2
+  and 1.3), RFC 8448's HKDF vectors, and Wireshark's independent tls13-rfc8446 capture and key
+  log (both sessions decrypted, `GET /first` and `GET /second` learned). TLS 1.3 drafts
+  (Wireshark's tls13-20 capture) are out of scope. Fuzz target extended to TLS records and key
+  logs: 43,221 runs clean.

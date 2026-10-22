@@ -9,6 +9,7 @@ classDiagram
     class Responder {
         <<trait>>
         +name() str
+        +learnable() bool
         +respond(event: Event, default: Option~bytes~) Future~Option~Proposal~~
     }
     class Proposal {
@@ -26,11 +27,20 @@ classDiagram
         +rate: f64
         +outcomes: Outcomes
         +key_transforms: Vec~String~
+        +generate: bool
         +filter: EventFilter
     }
     class ModelResponder {
-        -model: Model
+        -model: LiveModel
         -successful_only: bool
+        -key_transforms: Vec~Transform~
+        -generate: bool
+        +learnable() false
+    }
+    class OnlineLearner {
+        +learner: Learner
+        -sources: Vec~LearnSource~
+        +observe(event, source, response)
     }
     class PluginResponder {
         -command: Vec~String~
@@ -41,6 +51,7 @@ classDiagram
     Responder <|.. PluginResponder
     Responder ..> Proposal
     ResponderConfig ..> Responder : responders::build()
+    OnlineLearner ..> Responder : learns answers of learnable() ones
 ```
 
 ## Learning (nucleus/crates/model)
@@ -59,6 +70,7 @@ classDiagram
         +format = "fakenet-model-pack"
         +version = 1
         +sources: Vec~String~
+        +decrypted: u64
         +protocols: Map~String, ProtocolModel~
         +add(protocol, request, response)
         +merge(other)
@@ -82,6 +94,23 @@ classDiagram
         +load(paths) Model
         +answer_with(protocol, request, rng, successful_only) Option~Sampled~
         +answer_event(protocol, payload, meta, rng, successful_only) Option~Sampled~
+        +generate_event(protocol, payload, meta, rng, successful_only) Option~Sampled~
+    }
+    class LiveModel {
+        +load(paths) LiveModel
+        +current() Arc~Model~
+    }
+    class Learner {
+        +open(path, source) Learner
+        +record(protocol, keys, answer)
+        +save() bool
+    }
+    class TextModel {
+        +train(texts, order) TextModel
+        +generate(rng) bytes
+    }
+    class KeyLog {
+        +parse(text) KeyLog
     }
     Analyzer <|.. Http
     Analyzer <|.. Dns
@@ -94,6 +123,10 @@ classDiagram
     ProtocolModel *-- KeyModel
     KeyModel *-- Answer
     Model o-- Pack
+    LiveModel o-- Model : reloads
+    Learner o-- Pack : adds, saves
+    Model ..> TextModel : generate_event
+    KeyLog ..> Pack : learn_with(paths, decode, keys)
     Pack ..> Analyzer : keys, stored_answer
 ```
 

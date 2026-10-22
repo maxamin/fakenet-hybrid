@@ -21,6 +21,14 @@ fuzz_target!(|data: &[u8]| {
             let _ = model.answer_with(protocol, data, &mut rng, true);
         }
     }
+    // As TLS: messages split at 0xff bytes, alternating client and server, against a key log
+    // with every secret for an all-zero client random (TLS 1.2 and 1.3), and as a key log
+    let zero = "00".repeat(32);
+    let keys = fakenet_model::tls::KeyLog::parse(&["CLIENT_RANDOM", "CLIENT_HANDSHAKE_TRAFFIC_SECRET", "SERVER_HANDSHAKE_TRAFFIC_SECRET", "CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0"].map(|label| format!("{label} {zero} {}\n", "11".repeat(48))).concat());
+    let messages = data.split(|&b| b == 0xff).enumerate().map(|(i, m)| (i % 2 == 0, m.to_vec())).collect();
+    let conversation = fakenet_model::flows::Conversation { transport: fakenet_model::pcap::Transport::Tcp, server_port: 443, messages };
+    let _ = fakenet_model::tls::decrypt(&conversation, &keys);
+    let _ = fakenet_model::tls::KeyLog::parse(&String::from_utf8_lossy(data));
     // As one IP packet
     let _ = fakenet_model::pcap::parse_ip(data, 0.0);
     // As a request to every analyser

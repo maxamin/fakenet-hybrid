@@ -176,6 +176,7 @@ async fn nucleus_and_camel_daemon() {
         manual: None,
         hooks: None,
         responders: Vec::new(),
+        learner: None,
     });
     let server = Server::start(ctx, "127.0.0.1".parse().unwrap(), &[
         listener("http", Protocol::Http, Transport::Tcp),

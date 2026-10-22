@@ -14,3 +14,8 @@ serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 time.workspace = true
+ring.workspace = true
+
+[dev-dependencies]
+rustls.workspace = true
+rcgen.workspace = true
